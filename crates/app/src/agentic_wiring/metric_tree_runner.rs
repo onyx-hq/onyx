@@ -33,6 +33,7 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::agentic_wiring::project_ctx::build_connector_for_db;
+use crate::server::api::metric_tree::OPPORTUNITY_MIN_SUPPORT;
 use crate::server::preagg_context::RollupFreshness;
 use oxy::config::{ReadOnly, WorkingCopy};
 
@@ -618,6 +619,7 @@ impl MetricTreeRunner for OxyMetricTreeRunner {
         target: String,
         time_dimension: String,
         period: (String, String),
+        statistic: oxy_airlayer_compat::engine::metric_tree_ops::BenchmarkStatistic,
     ) -> Result<OpportunityResult, MetricTreeRunnerError> {
         let inputs = self.snapshot_for_blocking().await?;
         tokio::task::spawn_blocking(move || {
@@ -651,6 +653,8 @@ impl MetricTreeRunner for OxyMetricTreeRunner {
                 // upside in this measure?"); it has no instance in focus to
                 // narrow to.
                 &[],
+                statistic,
+                OPPORTUNITY_MIN_SUPPORT,
                 &*executor,
             )
             .map_err(|e| MetricTreeRunnerError::Op(e.to_string()))

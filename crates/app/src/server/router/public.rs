@@ -264,6 +264,15 @@ pub(super) fn build_public_routes(app_state: &AppState) -> RoleRouter {
         // bundles — the entity/measure map the IDE's World Model surface
         // renders. SDK exposes via `useWorldModel` / `useWorldModelInstances`
         // / `useMeasureBreakdown`.
+        // Peer cohorts — cross-sectional comparison (airlayer PR #116). Sibling
+        // of the metric-tree ops above: same customer-app gate, same
+        // compile-boundary layer. Scoped to the caller's reach, so unlike the
+        // population-wide metric-tree surfaces it refuses rather than answering
+        // when the entity is not bound to the locations registry.
+        .route_fleet(
+            "/projects/{project_id}/semantic/cohort",
+            post(projects::cohort::post_cohort),
+        )
         .route_fleet(
             "/projects/{project_id}/semantic/world-model",
             get(projects::world_model::get_world_model),

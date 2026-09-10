@@ -104,6 +104,15 @@ const ALLOWED: &[(&str, &str)] = &[
          (`server/api/metric_tree.rs`) takes the extractor and IS cached.",
     ),
     (
+        "crates/app/src/server/api/projects/cohort.rs",
+        "`post_cohort` runs `augment_layer_for_cohort` first, which installs a \
+         synthetic `__cohort_total__` count-distinct measure the truncation \
+         guard reads — so the layer is unique to the request, exactly like \
+         `post_opportunity` above. It is also on the customer-app boundary \
+         (mounted in `router/public.rs`), so no `SemanticEngineCacheCtx` \
+         extension exists to supply a cache in the first place.",
+    ),
+    (
         "crates/app/src/server/simulation/probe.rs",
         "Run-scoped: `FitProbe` parses its layer out of the materialised world \
          directory a run generates, not the workspace's. The cache is keyed by \

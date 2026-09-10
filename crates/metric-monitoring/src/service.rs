@@ -1179,6 +1179,7 @@ mod tests {
             _: String,
             _: String,
             _: (String, String),
+            _: oxy_airlayer_compat::engine::metric_tree_ops::BenchmarkStatistic,
         ) -> Result<
             oxy_airlayer_compat::engine::metric_tree_ops::OpportunityResult,
             MetricTreeRunnerError,

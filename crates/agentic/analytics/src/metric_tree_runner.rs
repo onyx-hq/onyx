@@ -16,6 +16,7 @@ use oxy_airlayer_compat::DatabaseConfig;
 use oxy_airlayer_compat::SemanticLayer;
 use oxy_airlayer_compat::engine::EngineError;
 use oxy_airlayer_compat::engine::metric_tree::MetricTree;
+use oxy_airlayer_compat::engine::metric_tree_ops::BenchmarkStatistic;
 use oxy_airlayer_compat::engine::metric_tree_ops::{
     ExplainConfig, ExplainResult, OpportunityResult,
 };
@@ -36,6 +37,16 @@ use std::sync::Arc;
 /// operate on the in-memory tree and only need `load_layer`.
 ///
 /// Concrete impl: `OxyMetricTreeRunner` in `crates/app/src/agentic_wiring/`.
+/// The benchmark statistic used when a caller names none.
+///
+/// `P75` because it is the closest single value to the adaptive rule airlayer
+/// removed — it is the branch that rule took for any dimension large enough
+/// for a percentile to be stable — and because oxy's own fixtures and UI
+/// predominantly show `p75`. A caller wanting the old `best_peer` behaviour on
+/// a thin dimension now asks for it explicitly, which is the point: the choice
+/// is visible in the request rather than frozen in a constant.
+pub const DEFAULT_BENCHMARK_STATISTIC: BenchmarkStatistic = BenchmarkStatistic::P75;
+
 #[async_trait::async_trait]
 pub trait MetricTreeRunner: Send + Sync {
     /// Load the workspace's semantic model (the same scan path used by the
@@ -64,11 +75,19 @@ pub trait MetricTreeRunner: Send + Sync {
 
     /// Segment opportunity sizing. Same `spawn_blocking` contract as
     /// [`Self::run_explain`].
+    ///
+    /// `statistic` is the caller's, not the engine's. airlayer used to choose
+    /// it adaptively — the best-performing segment for a dimension with few
+    /// segments, the 75th percentile once there were enough for a percentile to
+    /// mean anything — and replaced that with an explicit argument. No fixed
+    /// value reproduces the old rule, so rather than freeze one here the choice
+    /// is passed down, defaulting to [`DEFAULT_BENCHMARK_STATISTIC`].
     async fn run_opportunity(
         &self,
         target: String,
         time_dimension: String,
         period: (String, String),
+        statistic: BenchmarkStatistic,
     ) -> Result<OpportunityResult, MetricTreeRunnerError>;
 
     /// Return the distinct non-null values of `dimension` observed for

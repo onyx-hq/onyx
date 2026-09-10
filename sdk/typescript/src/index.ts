@@ -62,6 +62,15 @@ export type {
   UnvaluedNode
 } from "./metricTree";
 export { MetricTreeClient } from "./metricTree";
+// Peer cohorts
+export type {
+  BenchmarkStatistic,
+  CohortRequest,
+  CohortSubject,
+  ExcludedSubject,
+  PeerCohortResult
+} from "./peerCohort";
+export { PeerCohortClient } from "./peerCohort";
 // World-model graph + instances + driver-tree
 export type {
   AdditivityClass,

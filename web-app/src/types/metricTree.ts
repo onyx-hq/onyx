@@ -482,6 +482,10 @@ export interface ExplainResult {
 
 // ── opportunity ─────────────────────────────────────────────────────────────
 
+/** How a segment's benchmark is computed from its peers. Serde
+ *  `rename_all = "snake_case"`: `"median"` | `"p75"` | `"best_peer"`. */
+export type BenchmarkStatistic = "median" | "p75" | "best_peer";
+
 export interface SegmentOpportunity {
   segment: string;
   /** Benchmarked figure: a per-unit RATE (value / rows) when `weight_basis` is
@@ -624,6 +628,17 @@ export interface DrillRequest {
   /** Decompose this ranked row instead of the engine's top pick. Omit for the
    *  top pick. A row that is no longer in the scan comes back with no `levels`. */
   root?: DrillRoot;
+  /**
+   * How a segment's benchmark is computed from its peers. Defaults to
+   * `"p75"` server-side when omitted.
+   *
+   * An airlayer upgrade deleted the engine's adaptive selection — best-peer
+   * for a dimension with too few segments for a percentile to mean anything,
+   * p75 once there were enough — in favor of an explicit required argument.
+   * No single fixed value reproduced the old behavior, so rather than
+   * freezing one server-side, the choice is now the caller's.
+   */
+  statistic?: BenchmarkStatistic;
 }
 
 // ── request payloads ────────────────────────────────────────────────────────
@@ -661,6 +676,17 @@ export interface OpportunityRequest {
   period: [string, string];
   /** Narrow the scan to one instance. Omit to size the whole population. */
   instance?: OpportunityInstance;
+  /**
+   * How a segment's benchmark is computed from its peers. Defaults to
+   * `"p75"` server-side when omitted.
+   *
+   * An airlayer upgrade deleted the engine's adaptive selection — best-peer
+   * for a dimension with too few segments for a percentile to mean anything,
+   * p75 once there were enough — in favor of an explicit required argument.
+   * No single fixed value reproduced the old behavior, so rather than
+   * freezing one server-side, the choice is now the caller's.
+   */
+  statistic?: BenchmarkStatistic;
 }
 
 /** Response of `GET /semantic/metric-tree/time-dimensions`. */

@@ -589,8 +589,58 @@ aho-corasick = "1.1"
 # nothing in them would have caught a subtraction. That is how `afe6daf` came to
 # be needed, and how an earlier bump came to have two of main's pre-aggregation
 # fixes to carry.
-# rev is the commit tagged v0.4.0 (tags can be moved; the rev cannot).
-airlayer = { git = "https://github.com/oxy-hq/airlayer", rev = "b141d8df83dd0bbd1f7b3d8c75f48d25f580281b" }
+# NOW AT f0bacc8 — airlayer main, 60 commits on from the v0.4.0 tag. Not a tag
+# this time: the standing advice above is to prefer the next TAG, and there
+# isn't one — v0.4.0 is still the newest, and f0bacc8 is `origin/main` HEAD
+# exactly. `b141d8d` is an ancestor, so nothing is reverted.
+#
+# Carried FOR: peer cohorts (airlayer PR #116) — `cohorts:` on an entity in a
+# `.view.yml`, resolved by `engine::cohort::resolve_cohort` into per-subject
+# baselines and gaps. Surfaced by `POST /projects/{id}/semantic/cohort`.
+#
+#   * **`Measure` gains two fields**, which is the only MECHANICAL break: the
+#     `__oxy_row_count` literal in crates/infrastructure/semantic/src/lib.rs
+#     needed `direction` and `default_cohort`. `direction` is
+#     `skip_serializing_if` on its `HigherIsBetter` default, so passing
+#     `Default::default()` keeps that injected measure serializing
+#     byte-identically. **No rollup hash moves** — airlayer's own
+#     `definition_fingerprint_ignores_measure_direction` and
+#     `..._ignores_default_cohort` tests pin that, so
+#     `PREAGG_BUILDER_GENERATION` in crates/app/src/server/preagg_generation.rs
+#     stays at 1 and nothing rebuilds.
+#
+#   * **`opportunity` and `opportunity_drill` changed shape, and this one is
+#     BEHAVIOURAL — read before trusting an opportunity number across this
+#     bump.** Both gained `statistic: BenchmarkStatistic` and
+#     `min_support: usize`; drill also moved `executor` last, after `config`.
+#     Upstream DELETED the adaptive `pick_benchmark` (best_peer for
+#     few-segment dimensions, p75 once percentile estimation was meaningful)
+#     and made the statistic an explicit argument, so **no single value
+#     reproduces the old behaviour**. oxy now passes the constants
+#     `OPPORTUNITY_STATISTIC` (= `P75`) and `OPPORTUNITY_MIN_SUPPORT` (= `1`)
+#     from crates/app/src/server/api/metric_tree.rs — P75 as the closest match,
+#     and 1 because the pre-bump code had no support floor at all and
+#     upstream's new default of 2 would introduce refusals nobody asked for.
+#     Small-cardinality dimensions that used to benchmark against their best
+#     peer will now report different upside. This is a forced choice carried by
+#     the bump, not a product decision — it wants one.
+#
+#   * **Other opportunity behaviour that moved underneath us**, all upstream:
+#     `opportunity` now honours `MeasureDirection`, so for a `lower_is_better`
+#     measure the segments sized as having upside are the opposite ones;
+#     additive composites with filtered leaves now refuse to size rather than
+#     returning a wrong number; a new `min_support` floor adds `"empty"` as a
+#     fourth `benchmark_basis` value. Note web-app's
+#     WorldModelSegmentGroups.tsx reads `benchmark_basis` as a binary
+#     `=== "p75" ? … : "best peer"`, so an `"empty"` basis would render as
+#     "best peer" — pre-existing shape, newly reachable.
+#
+#   * Nothing in the range touches timezone/DATE handling or pre-aggregation
+#     selection. Checked, because both have bitten this pin before.
+#
+# rev is a bare main commit; there is no tag on it (tags can be moved; the rev
+# cannot).
+airlayer = { git = "https://github.com/oxy-hq/airlayer", rev = "f0bacc8c3d0e3d23e6368bb70aa3a70a92116135" }
 # Anomaly detection: ETS forecasting + MSTL decomposition. augurs-ets gives
 # Holt-Winters family (with auto model selection); augurs-mstl handles
 # multi-seasonality (daily + weekly + yearly). Pulled in by oxy-metric-monitoring.

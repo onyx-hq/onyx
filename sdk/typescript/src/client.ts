@@ -2,6 +2,7 @@ import { AnomaliesClient } from "./anomalies";
 import { createConfigAsync, type OxyConfig } from "./config";
 import { MetricTreeClient } from "./metricTree";
 import { readParquet } from "./parquet";
+import { PeerCohortClient } from "./peerCohort";
 import type { ApiError, AppDataResponse, AppItem, GetDisplaysResponse, TableData } from "./types";
 
 /**
@@ -11,6 +12,7 @@ export class OxyClient {
   private config: OxyConfig;
   private _metricTree: MetricTreeClient | undefined;
   private _anomalies: AnomaliesClient | undefined;
+  private _peerCohort: PeerCohortClient | undefined;
 
   constructor(config: OxyConfig) {
     this.config = config;
@@ -53,6 +55,27 @@ export class OxyClient {
       this._anomalies = new AnomaliesClient(this.config, this.request.bind(this));
     }
     return this._anomalies;
+  }
+
+  /**
+   * Peer-cohort benchmarking: resolve a subject's peer cohort and every
+   * peer's comparison against it. Lazily constructed on first access.
+   *
+   * @example
+   * ```typescript
+   * const result = await client.peerCohort.resolve({
+   *   entity: "restaurant_id",
+   *   measure: "orders.net_revenue",
+   *   time_dimension: "orders.order_date",
+   *   period: ["2025-09-01", "2025-09-30"],
+   * });
+   * ```
+   */
+  get peerCohort(): PeerCohortClient {
+    if (!this._peerCohort) {
+      this._peerCohort = new PeerCohortClient(this.config, this.request.bind(this));
+    }
+    return this._peerCohort;
   }
 
   /**

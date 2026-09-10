@@ -29,7 +29,7 @@ use oxy::adapters::workspace::manager::WorkspaceManager;
 use oxy_airlayer_compat::engine::metric_tree::MetricTree;
 use oxy_airlayer_compat::engine::metric_tree_fit::{FittedDriver, apply_fitted_coefficients};
 use oxy_airlayer_compat::engine::metric_tree_ops::{
-    BaselineOutcome, ExplainConfig, ExplainResult, OpportunityResult,
+    BaselineOutcome, BenchmarkStatistic, ExplainConfig, ExplainResult, OpportunityResult,
 };
 use oxy_auth::extractor::AuthenticatedUserExtractor;
 
@@ -40,6 +40,22 @@ use crate::server::api::middlewares::workspace_context::{
     EffectiveWorkspaceRole, PreaggCacheCtx, SemanticEngineCacheCtx, WorkspaceManagerReadOnly,
 };
 use crate::server::api::semantic::{QueryScanSource, resolve_query_scan_source};
+
+/// Minimum distinct entities required behind a segment for `opportunity`
+/// (and `opportunity_drill`) to consider it, per upstream's `n < min_support`
+/// exclusion. Pinned to `1` — which excludes only segments with zero
+/// distinct entities behind them — rather than adopting upstream's new
+/// default of `2`: the pre-bump code had no support floor at all, and a
+/// dependency-version pin is not the place to introduce new refusals. If a
+/// real support-floor product decision is made later, change it here once.
+pub const OPPORTUNITY_MIN_SUPPORT: usize = 1;
+
+/// Serde hook for the optional `statistic` request field. The default lives
+/// in `agentic-analytics` beside the trait, so the HTTP surface and the agent
+/// tool cannot drift apart on what "unspecified" means.
+fn default_benchmark_statistic() -> BenchmarkStatistic {
+    agentic_analytics::metric_tree_runner::DEFAULT_BENCHMARK_STATISTIC
+}
 
 #[derive(Debug)]
 pub enum MetricTreeError {
@@ -371,6 +387,17 @@ pub struct OpportunityRequest {
     pub time_dimension: String,
     /// `[start, end]` inclusive date strings.
     pub period: (String, String),
+    /// Which statistic over the peer segments sets the benchmark:
+    /// `median` | `p75` | `best_peer`. Omitted means
+    /// [`agentic_analytics::metric_tree_runner::DEFAULT_BENCHMARK_STATISTIC`].
+    ///
+    /// The caller's choice rather than the engine's: airlayer deleted the
+    /// adaptive rule that used to make it (best segment for a thin dimension,
+    /// p75 once a percentile meant something) and no fixed value reproduces
+    /// it, so freezing one server-side would settle a product question inside
+    /// a dependency bump.
+    #[serde(default = "default_benchmark_statistic")]
+    pub statistic: BenchmarkStatistic,
     /// Narrow the scan to one world-model instance. `None` sizes across the
     /// whole population.
     pub instance: Option<OpportunityInstance>,
@@ -534,6 +561,8 @@ pub async fn post_opportunity(
             &req.time_dimension,
             (req.period.0.as_str(), req.period.1.as_str()),
             &scope,
+            req.statistic,
+            OPPORTUNITY_MIN_SUPPORT,
             &executor,
         )
     })
@@ -1162,6 +1191,10 @@ pub struct DrillRequest {
     pub time_dimension: String,
     /// `[start, end]` inclusive date strings.
     pub period: (String, String),
+    /// See [`OpportunityRequest::statistic`]. A drill re-scans the root the
+    /// same way, so it takes the same benchmark.
+    #[serde(default = "default_benchmark_statistic")]
+    pub statistic: BenchmarkStatistic,
     /// Narrow the scan to one world-model instance. `None` drills across the
     /// whole population.
     pub instance: Option<OpportunityInstance>,
@@ -1290,8 +1323,10 @@ pub async fn post_opportunity_drill(
             &req.time_dimension,
             (req.period.0.as_str(), req.period.1.as_str()),
             &scope,
-            &executor,
             &config,
+            req.statistic,
+            OPPORTUNITY_MIN_SUPPORT,
+            &executor,
         )
     })
     .await
@@ -1439,6 +1474,66 @@ pub(crate) fn derive_baseline_period(start: &str, end: &str) -> Option<(String, 
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// Omitting `statistic` must mean p75 — the documented default, and what
+    /// every existing caller (which sends no such field) now gets.
+    #[test]
+    fn opportunity_request_defaults_the_statistic_to_p75() {
+        let req: OpportunityRequest = serde_json::from_value(serde_json::json!({
+            "target": "sales.net_revenue",
+            "time_dimension": "sales.order_date",
+            "period": ["2026-08-01", "2026-08-31"],
+        }))
+        .unwrap();
+        assert_eq!(req.statistic, BenchmarkStatistic::P75);
+    }
+
+    #[test]
+    fn opportunity_request_takes_the_callers_statistic() {
+        for (wire, want) in [
+            ("median", BenchmarkStatistic::Median),
+            ("p75", BenchmarkStatistic::P75),
+            ("best_peer", BenchmarkStatistic::BestPeer),
+        ] {
+            let req: OpportunityRequest = serde_json::from_value(serde_json::json!({
+                "target": "sales.net_revenue",
+                "time_dimension": "sales.order_date",
+                "period": ["2026-08-01", "2026-08-31"],
+                "statistic": wire,
+            }))
+            .unwrap();
+            assert_eq!(req.statistic, want, "wire value `{wire}`");
+        }
+    }
+
+    #[test]
+    fn drill_request_defaults_the_statistic_to_p75() {
+        let req: DrillRequest = serde_json::from_value(serde_json::json!({
+            "target": "sales.net_revenue",
+            "time_dimension": "sales.order_date",
+            "period": ["2026-08-01", "2026-08-31"],
+        }))
+        .unwrap();
+        assert_eq!(req.statistic, BenchmarkStatistic::P75);
+    }
+
+    #[test]
+    fn an_unknown_statistic_is_refused_naming_the_valid_values() {
+        let err = serde_json::from_value::<OpportunityRequest>(serde_json::json!({
+            "target": "sales.net_revenue",
+            "time_dimension": "sales.order_date",
+            "period": ["2026-08-01", "2026-08-31"],
+            "statistic": "mean",
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("median") && err.contains("p75") && err.contains("best_peer"),
+            "{err}"
+        );
+    }
+
     use super::*;
     use std::collections::HashMap;
 
@@ -1975,6 +2070,7 @@ views:
             target: "orders.gross_revenue".into(),
             period: ("2026-04-15".into(), "2026-07-13".into()),
             overall_value: 640_000.0,
+            direction: oxy_airlayer_compat::schema::models::MeasureDirection::HigherIsBetter,
             weight_basis: weight_basis.into(),
             dimensions: vec![],
             skipped_dimensions: vec![],

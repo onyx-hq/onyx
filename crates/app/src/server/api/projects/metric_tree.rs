@@ -329,7 +329,12 @@ pub async fn post_opportunity(
     }
     let runner = runner_for(&boundary, &app_state);
     match runner
-        .run_opportunity(req.target, req.time_dimension, (req.period.0, req.period.1))
+        .run_opportunity(
+            req.target,
+            req.time_dimension,
+            (req.period.0, req.period.1),
+            req.statistic,
+        )
         .await
     {
         Ok(r) => cache_store(boundary.project_id(), "mt-opp", &key, &r),

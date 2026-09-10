@@ -839,6 +839,7 @@ async fn list_anomalies_returns_empty_for_null_store() {
             _: String,
             _: String,
             _: (String, String),
+            _statistic: oxy_airlayer_compat::engine::metric_tree_ops::BenchmarkStatistic,
         ) -> Result<OpportunityResult, MetricTreeRunnerError> {
             Err(MetricTreeRunnerError::Op("test stub".into()))
         }
@@ -974,6 +975,7 @@ async fn detect_anomalies_returns_message_when_insufficient_data() {
             _: String,
             _: String,
             _: (String, String),
+            _statistic: oxy_airlayer_compat::engine::metric_tree_ops::BenchmarkStatistic,
         ) -> Result<OpportunityResult, MetricTreeRunnerError> {
             Err(MetricTreeRunnerError::Op("stub".into()))
         }

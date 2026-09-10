@@ -361,6 +361,16 @@ fn inject_row_count_measures(views: &mut Vec<airlayer::View>) {
                 inherits_from: None,
                 drivers: None,
                 shift: None,
+                // Both new in airlayer f0bacc8. `direction` defaults to
+                // `HigherIsBetter` and is `skip_serializing_if` on that value,
+                // so `Default::default()` keeps this injected measure
+                // serializing byte-identically to before the bump. A row count
+                // has no meaningful polarity to state, and airlayer never
+                // infers one from a name.
+                direction: Default::default(),
+                // `__oxy_row_count` is injected, not authored, so it names no
+                // peer cohort to be compared within.
+                default_cohort: None,
                 meta: None,
             });
     }

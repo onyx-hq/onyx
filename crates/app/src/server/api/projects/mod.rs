@@ -12,6 +12,7 @@
 pub mod agent_ask;
 pub mod agent_run_stream;
 pub mod automation_run;
+pub mod cohort;
 pub mod metric_tree;
 pub mod metric_tree_projection;
 pub mod query;

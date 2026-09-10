@@ -3,6 +3,7 @@
 // emits snake_case so these field names match the wire format verbatim.
 
 import type { OxyConfig } from "./config";
+import type { BenchmarkStatistic } from "./peerCohort";
 
 // ── Tree ──────────────────────────────────────────────────────────────────────
 
@@ -455,6 +456,17 @@ export interface OpportunityRequest {
   target: string;
   time_dimension: string;
   period: [string, string];
+  /**
+   * How a segment's benchmark is computed from its peers. Defaults to
+   * `"p75"` server-side when omitted.
+   *
+   * An airlayer upgrade deleted the engine's adaptive selection — best-peer
+   * for a dimension with too few segments for a percentile to mean anything,
+   * p75 once there were enough — in favor of an explicit required argument.
+   * No single fixed value reproduced the old behavior, so rather than
+   * freezing one server-side, the choice is now the caller's.
+   */
+  statistic?: BenchmarkStatistic;
 }
 
 export interface OpportunityResult {

@@ -163,7 +163,12 @@ async fn run_opportunity(
     let period_end = required_str(&params, "period_end")?.to_string();
 
     let result = runner
-        .run_opportunity(target, time_dimension, (period_start, period_end))
+        .run_opportunity(
+            target,
+            time_dimension,
+            (period_start, period_end),
+            crate::metric_tree_runner::DEFAULT_BENCHMARK_STATISTIC,
+        )
         .await
         .map_err(|e| ToolError::Execution(e.to_string()))?;
 
@@ -236,6 +241,7 @@ mod tests {
             _target: String,
             _time_dimension: String,
             _period: (String, String),
+            _statistic: oxy_airlayer_compat::engine::metric_tree_ops::BenchmarkStatistic,
         ) -> Result<OpportunityResult, MetricTreeRunnerError> {
             unreachable!("predict is a pure op")
         }
