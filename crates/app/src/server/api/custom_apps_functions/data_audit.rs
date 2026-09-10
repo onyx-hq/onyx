@@ -16,6 +16,8 @@
 //!    (`pg_stat_statements` strips comments; that view is for shapes, not
 //!    audit). Airhouse can lift the same trailer into
 //!    `set_commit_message` server-side — see `customer-apps-functions.md`.
+//!    On ClickHouse an INSERT carries it in front instead, because there
+//!    everything after `VALUES` is data and not SQL ([`trailer_leads`]).
 //! 3. **In `audit_events`** — after a write commits, one hash-chained row
 //!    ([`entry`]) with the verified actor, the target schema/table, the verb,
 //!    the row count and the trace id. Reads never produce one.
@@ -68,6 +70,10 @@ pub(super) fn set_application_name_sql(tag: &str) -> String {
     format!("SET LOCAL application_name = '{tag}'")
 }
 
+/// Three fixed keys, a simple uuid, a traceparent and the encoded app and
+/// function names — enough that the trailer never reallocates the statement.
+const TRAILER_HEADROOM: usize = 160;
+
 /// Append a sqlcommenter trailer (`/*key='value',…*/`, values URL-encoded)
 /// on its own line, so a statement ending in a `--` comment cannot swallow
 /// it. Keys are fixed; values are identifiers the platform minted.
@@ -76,9 +82,54 @@ pub(super) fn commented(
     identity: &InvocationIdentity,
     traceparent: Option<&str>,
 ) -> String {
-    let mut out = String::with_capacity(sql.len() + 160);
+    let mut out = String::with_capacity(sql.len() + TRAILER_HEADROOM);
     out.push_str(sql.trim_end());
-    out.push_str("\n/*");
+    out.push('\n');
+    write_trailer(&mut out, identity, traceparent);
+    out
+}
+
+/// The same trailer, on its own line in FRONT of the statement, for the
+/// statements [`trailer_leads`] names. Identical bytes, opposite end.
+pub(super) fn commented_leading(
+    sql: &str,
+    identity: &InvocationIdentity,
+    traceparent: Option<&str>,
+) -> String {
+    let mut out = String::with_capacity(sql.len() + TRAILER_HEADROOM);
+    write_trailer(&mut out, identity, traceparent);
+    out.push('\n');
+    out.push_str(sql.trim_start());
+    out
+}
+
+/// Whether the trailer has to lead the statement instead of following it.
+///
+/// ClickHouse's `VALUES` is an input *format*, not an expression list: the
+/// server stops parsing SQL at the keyword and reads the rest of the request
+/// body as row data. A trailer after the rows is read as the next row, and the
+/// insert is rejected whole — `Code: 27 … Cannot parse input: expected '('
+/// before: '/*oxy.app=…'`, which is what every `ctx.warehouse.insert` against
+/// a ClickHouse warehouse returned until this existed.
+///
+/// The same swallowing is why trailing is not merely fatal but pointless here:
+/// a trailer inside the data stream never reaches `system.query_log`, so the
+/// one audit line it exists to leave is the line that gets lost. In front it
+/// parses as a comment and the log keeps it.
+///
+/// Scoped to the dialect that needs it, not applied to every INSERT: the other
+/// planes keep the sqlcommenter convention, which Airhouse's server-side
+/// `set_commit_message` lift reads from the end of the statement.
+pub(super) fn trailer_leads(dialect: agentic_connector::SqlDialect, verb: &str) -> bool {
+    use agentic_connector::SqlDialect as D;
+    // ClickHouse has no `SqlDialect` variant of its own; the connector names
+    // itself in `Other`, so that name is the only thing there is to match.
+    matches!(dialect, D::Other(name) if name.eq_ignore_ascii_case("clickhouse"))
+        && verb.eq_ignore_ascii_case("INSERT")
+}
+
+fn write_trailer(out: &mut String, identity: &InvocationIdentity, traceparent: Option<&str>) {
+    out.push_str("/*");
     let _ = write!(
         out,
         "oxy.app='{}',oxy.fn='{}',oxy.invocation='{}'",
@@ -90,7 +141,6 @@ pub(super) fn commented(
         let _ = write!(out, ",traceparent='{}'", encode(tp));
     }
     out.push_str("*/");
-    out
 }
 
 /// Percent-encode everything outside the sqlcommenter unreserved set. Keeps
@@ -373,6 +423,37 @@ mod tests {
                 .contains("traceparent='00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'")
         );
         assert!(!commented("select 1;", &id, None).contains("traceparent"));
+    }
+
+    #[test]
+    fn a_clickhouse_insert_carries_the_trailer_in_front() {
+        use agentic_connector::SqlDialect as D;
+        let ch = D::Other("ClickHouse");
+
+        assert!(trailer_leads(ch, "INSERT"));
+        // The verb arrives from `db_query_summary`, which upper-cases — but the
+        // decision must not depend on that.
+        assert!(trailer_leads(ch, "insert"));
+        // A read streams nothing; only the INSERT data path is at risk.
+        assert!(!trailer_leads(ch, "SELECT"));
+        assert!(!trailer_leads(ch, ""));
+        // Every other plane keeps the convention Airhouse reads at the end.
+        assert!(!trailer_leads(D::DuckDb, "INSERT"));
+        assert!(!trailer_leads(D::Postgres, "INSERT"));
+        assert!(!trailer_leads(D::Other("Databricks"), "INSERT"));
+
+        let id = identity(true);
+        let sql = "INSERT INTO t (a) VALUES (1),(2)";
+        let out = commented_leading(sql, &id, None);
+        let (trailer, body) = out.split_once('\n').expect("trailer on its own line");
+        assert!(trailer.starts_with("/*") && trailer.ends_with("*/"));
+        assert_eq!(
+            body, sql,
+            "the statement is passed through byte for byte — a VALUES stream \
+             tolerates nothing appended to it"
+        );
+        // Same trailer, opposite end: the two placements must not drift apart.
+        assert_eq!(commented(sql, &id, None), format!("{sql}\n{trailer}"));
     }
 
     #[test]
