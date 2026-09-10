@@ -48,7 +48,23 @@ impl WorkspaceContext for OxyProjectContext {
             {
                 Ok(Some(materialised)) => {
                     let root = materialised.root.clone();
-                    return ContextRoot::materialised(root, Box::new(materialised));
+                    // The revision travels with the root because anything a
+                    // caller caches off this path must be keyed by it. A
+                    // materialised root is revision-shaped, not working-copy
+                    // shaped, and caching an engine built from revision A under
+                    // a working-copy key would serve it for revision B — a
+                    // promote that appears not to take effect.
+                    //
+                    // `materialise_agent_context` only returns `Some` under
+                    // `Origin::Compiled`, so this is always `Some` here; the
+                    // `unwrap_or_else` is a belt-and-braces that degrades to the
+                    // working-copy key rather than panicking.
+                    let revision_id = self
+                        .workspace_manager
+                        .config_manager
+                        .revision_id()
+                        .unwrap_or_else(uuid::Uuid::nil);
+                    return ContextRoot::materialised(root, Box::new(materialised), revision_id);
                 }
                 // On a stateless node the FS fall-through below is doomed (no
                 // working copy), so make the miss LOUD and specific rather than
@@ -353,6 +369,53 @@ impl WorkspaceContext for OxyProjectContext {
                     "compile boundary pipeline lookup error; reporting unavailable"
                 );
                 Err(e.to_string())
+            }
+        }
+    }
+
+    /// Serve `execute_sql`'s `sql_file` from the compile boundary.
+    ///
+    /// The reason this exists is a live failure, not tidiness: with airway
+    /// pipelines moved onto the worker fleet (#3056), an `airway ingest ->
+    /// execute_sql rollup` chain ran on a pod with no `/workspace` volume and
+    /// died on `failed to read SQL file …: No such file or directory`. The
+    /// pipeline's own definition already came from Postgres; the `.sql` it
+    /// delegated to did not.
+    ///
+    /// `.sql` files were already compiled — `oxy_compile`'s `VerifiedQuery`
+    /// kind walks them and the writer stores the body — so this is the missing
+    /// by-path read, not a new entity type.
+    async fn resolve_sql_file(&self, sql_ref: &str) -> Result<Option<String>, String> {
+        match self
+            .workspace_manager
+            .config_manager
+            .verified_query_content(sql_ref)
+            .await
+        {
+            Ok(Some(sql)) => {
+                tracing::debug!(
+                    workspace_id = %self.workspace_manager.workspace_id,
+                    sql_ref,
+                    "resolve_sql_file served from compile boundary"
+                );
+                Ok(Some(sql))
+            }
+            // Draft branch, not promoted, local workspace, or simply not a
+            // compiled path — the caller may read the working copy.
+            Ok(None) => Ok(None),
+            // Propagated rather than laundered into `Ok(None)`: this is
+            // "unknown", and the caller must not read it as "not compiled here"
+            // and go to a filesystem this node may not have.
+            Err(e) => {
+                tracing::warn!(
+                    workspace_id = %self.workspace_manager.workspace_id,
+                    sql_ref,
+                    error = ?e,
+                    "compile boundary lookup failed for sql_file"
+                );
+                Err(format!(
+                    "compile boundary unavailable for sql_file `{sql_ref}`: {e}"
+                ))
             }
         }
     }

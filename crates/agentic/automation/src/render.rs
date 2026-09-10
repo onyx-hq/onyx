@@ -153,6 +153,47 @@ pub(crate) fn validate_workspace_relative_path(
     workspace: &Path,
     relative: &str,
 ) -> Result<PathBuf, String> {
+    validate_workspace_relative_ref(relative)?;
+    Ok(workspace.join(Path::new(relative)))
+}
+
+/// The containment rule above, without a root to join to.
+///
+/// Split out because the same ref is now used two ways: as a **lookup key**
+/// into the compile boundary (`WorkspaceContext::resolve_sql_file`) and, only
+/// on a miss, as a filesystem path. A `../` ref has to be rejected before
+/// either, so the check cannot live inside the join — and it must stay ONE
+/// definition, because a boundary lookup that accepted what the filesystem
+/// path rejects would be a containment hole reachable without touching disk.
+///
+/// Purely syntactic: empty, absolute, and any `..` component. Symlink
+/// containment is the caller's job and still needs the canonicalising check on
+/// the filesystem side.
+pub(crate) fn validate_workspace_relative_ref(relative: &str) -> Result<(), String> {
+    normalize_workspace_relative_ref(relative).map(|_| ())
+}
+
+/// Validate as above, and return the ref in the **compile boundary's** spelling:
+/// forward slashes, no `./` prefix, no redundant `.` components.
+///
+/// The normalisation is not cosmetic. `verified_queries.file_path` holds the
+/// walker's rel-path (`crates/oxy-compile/src/walker.rs` — "workspace-relative
+/// path (forward slashes)"), which is never `./`-prefixed. A ref spelled
+/// `./sql/rollup.sql` is perfectly legal input — `sql_file` has always accepted
+/// it, and a Jinja-rendered path can easily produce it — but as a lookup key it
+/// MISSES a row that exists. The caller then falls through to the filesystem
+/// and fails on a node without one, which is precisely the instance affinity
+/// the boundary removes, reachable by a spelling.
+///
+/// So the same string must be normalised once and used for BOTH the row lookup
+/// and the filesystem join. Returning it from the validator is what keeps those
+/// two uses from drifting apart.
+///
+/// `Component::CurDir` is dropped rather than rejected: `./x.sql` and `x.sql`
+/// name the same file, and refusing one of them would be a behaviour break for
+/// automations that already use it (pinned by
+/// `render_validates_dot_slash_paths`).
+pub(crate) fn normalize_workspace_relative_ref(relative: &str) -> Result<String, String> {
     if relative.is_empty() {
         return Err("path is empty".into());
     }
@@ -162,13 +203,37 @@ pub(crate) fn validate_workspace_relative_path(
             "path {relative:?} must be relative to the workspace"
         ));
     }
-    if candidate
-        .components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return Err(format!("path {relative:?} must not contain `..` segments"));
+
+    let mut parts: Vec<&str> = Vec::new();
+    for component in candidate.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                return Err(format!("path {relative:?} must not contain `..` segments"));
+            }
+            // `./a/./b` and `a/b` address the same file; the boundary key is
+            // the latter.
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(part) => {
+                parts.push(
+                    part.to_str()
+                        .ok_or_else(|| format!("path {relative:?} is not valid UTF-8"))?,
+                );
+            }
+            // Unreachable for a relative path that is not absolute, but a
+            // silent `_ => {}` here would drop a prefix/root component and
+            // quietly rewrite the path.
+            other => {
+                return Err(format!(
+                    "path {relative:?} contains an unsupported component {other:?}"
+                ));
+            }
+        }
     }
-    Ok(workspace.join(candidate))
+    if parts.is_empty() {
+        // e.g. "." — syntactically fine, addresses no file.
+        return Err(format!("path {relative:?} names no file"));
+    }
+    Ok(parts.join("/"))
 }
 
 /// Decide whether a rendered condition expression counts as true.
@@ -288,6 +353,68 @@ mod tests {
             let err = validate_workspace_relative_path(Path::new("/ws"), p);
             assert!(err.is_err(), "should reject {p:?}, got {err:?}");
         }
+    }
+
+    /// The root-free half must reject exactly what the joining half rejects.
+    ///
+    /// `sql_file` now uses the ref TWICE — once as a compile-boundary lookup
+    /// key, and only on a miss as a filesystem path. If these two ever diverge,
+    /// a ref the filesystem path refuses could still be used to address a
+    /// compiled row, which is a containment hole reachable without touching
+    /// disk. Asserting them against each other is what keeps the split honest;
+    /// asserting the new one alone would not.
+    #[test]
+    fn the_root_free_check_agrees_with_the_joining_one() {
+        let cases = [
+            "../etc/passwd",
+            "data/../../etc",
+            "..",
+            "a/../b",
+            "./../x",
+            "/etc/passwd",
+            "",
+            "data/x.sql",
+            "./data/x.sql",
+            "queries/sales_daily_rollup.sql",
+        ];
+        for p in cases {
+            let joined = validate_workspace_relative_path(Path::new("/ws"), p);
+            let bare = validate_workspace_relative_ref(p);
+            assert_eq!(
+                joined.is_ok(),
+                bare.is_ok(),
+                "{p:?}: joining={joined:?} bare={bare:?}"
+            );
+        }
+    }
+
+    /// The normalised form is the compile boundary's key, so it must match the
+    /// walker's spelling exactly: forward slashes, no `./`, no bare `.`
+    /// components. A ref that normalises wrongly misses a row that exists and
+    /// falls back to a filesystem the node may not have.
+    #[test]
+    fn normalisation_produces_the_walker_spelling() {
+        for (input, want) in [
+            ("sql/rollup.sql", "sql/rollup.sql"),
+            ("./sql/rollup.sql", "sql/rollup.sql"),
+            ("./sql/./rollup.sql", "sql/rollup.sql"),
+            ("sql/./rollup.sql", "sql/rollup.sql"),
+            ("rollup.sql", "rollup.sql"),
+        ] {
+            assert_eq!(
+                normalize_workspace_relative_ref(input).unwrap(),
+                want,
+                "for {input:?}"
+            );
+        }
+    }
+
+    /// `.` alone is syntactically clean but addresses no file. Left to the
+    /// join it would silently become the workspace root.
+    #[test]
+    fn a_ref_naming_no_file_is_rejected() {
+        assert!(normalize_workspace_relative_ref(".").is_err());
+        assert!(normalize_workspace_relative_ref("./").is_err());
     }
 
     /// `sqlquote` wraps in single quotes and doubles embedded ones —

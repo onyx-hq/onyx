@@ -8,7 +8,9 @@ use agentic_core::result::CellValue;
 use serde_json::{Value, json};
 
 use crate::config::{SemanticQueryConfig, TaskType};
-use crate::render::{render_jinja_string, validate_workspace_relative_path};
+use crate::render::{
+    normalize_workspace_relative_ref, render_jinja_string, validate_workspace_relative_path,
+};
 use crate::workspace::WorkspaceContext;
 
 /// Default row limit for step execution results.
@@ -90,20 +92,9 @@ async fn execute_sql(
     let raw_sql = if let Some(q) = cfg.get("sql_query").and_then(|v| v.as_str()) {
         q.to_string()
     } else if let Some(path) = cfg.get("sql_file").and_then(|v| v.as_str()) {
-        let resolved_path = render_jinja_string(path, render_context)
+        let rendered = render_jinja_string(path, render_context)
             .map_err(|e| format!("render sql_file path {path:?}: {e}"))?;
-        // Containment: a rendered path that originated in untrusted
-        // upstream data (a SQL row value substituted via Jinja) must
-        // stay inside the workspace. Mirrors the read-side containment
-        // applied to `WorkspaceContext::resolve_automation_yaml`.
-        let root = workspace.workspace_path().ok_or_else(|| {
-            format!("sql_file {resolved_path:?}: this node holds no workspace files")
-        })?;
-        let full_path = validate_workspace_relative_path(root, &resolved_path)
-            .map_err(|e| format!("sql_file {resolved_path:?}: {e}"))?;
-        tokio::fs::read_to_string(&full_path)
-            .await
-            .map_err(|e| format!("failed to read SQL file {}: {e}", full_path.display()))?
+        load_sql_body(workspace, &rendered).await?
     } else {
         return Err("execute_sql: need 'sql_query' or 'sql_file'".into());
     };
@@ -118,6 +109,73 @@ async fn execute_sql(
         .map_err(|e| format!("SQL execution failed: {e}"))?;
 
     Ok(attach_sql(query_result_to_json(&exec_result.result), &sql))
+}
+
+/// Resolve a `sql_file` ref to its SQL body: compile boundary first, working
+/// copy only on a genuine miss.
+///
+/// Standalone rather than inline in [`execute_sql`] for the same reason
+/// `agentic_pipeline::pipeline_ref::load_pipeline_yaml` is — the ordering below
+/// is a property worth asserting, and asserting it should not require a
+/// connector, a render context, or a database.
+///
+/// The order is the whole contract:
+///
+/// 1. **Containment + normalisation, before either backend.** A rendered path
+///    can carry untrusted upstream data (a SQL row value substituted via
+///    Jinja), so `../` is rejected before the ref is used as a lookup key, not
+///    merely before it is used as a filesystem path. Normalising here is what
+///    makes `./sql/x.sql` and `sql/x.sql` address the same compiled row.
+/// 2. **`Ok(Some)` → done**, having touched no filesystem. This is what lets a
+///    worker with no `/workspace` volume run an `execute_sql` step at all.
+/// 3. **`Err` → propagate, never fall through.** The host could not be *asked*,
+///    which is not "not compiled here". Falling through would let a working
+///    copy that happens to exist answer a question the boundary owns.
+/// 4. **`Ok(None)` → the working copy**, and only if this node actually has
+///    one. `workspace_path()` is `Some` on a worker because the manager
+///    DECLARES a working copy while the volume is absent, so the `is_dir()`
+///    filter is what turns a raw ENOENT into a legible, deferrable message.
+async fn load_sql_body(workspace: &dyn WorkspaceContext, sql_ref: &str) -> Result<String, String> {
+    let sql_ref = normalize_workspace_relative_ref(sql_ref)
+        .map_err(|e| format!("sql_file {sql_ref:?}: {e}"))?;
+
+    match workspace.resolve_sql_file(&sql_ref).await {
+        Ok(Some(sql)) => Ok(sql),
+        Err(e) => Err(e),
+        Ok(None) => {
+            let root = workspace
+                .workspace_path()
+                .filter(|p| p.is_dir())
+                .ok_or_else(|| {
+                    // Name the carve-outs. `oxy_compile`'s walker routes
+                    // `modeling/**/*.sql` to Airform and `schemas/**/*.sql` to
+                    // `SchemaMigration` — neither lands in `verified_queries`,
+                    // so a step pointing at one always misses the boundary.
+                    // Without this the failure reads as a broken node rather
+                    // than "this subtree is not a verified query", and a
+                    // gold-layer rollup is exactly the sort of file someone
+                    // files under `modeling/`.
+                    let hint = if sql_ref.starts_with("modeling/") {
+                        " (paths under `modeling/` are Airform models, not verified queries, so \
+                         they are never served from the compile boundary)"
+                    } else if sql_ref.starts_with("schemas/") {
+                        " (paths under `schemas/` compile as OLTP schema migrations, not verified \
+                         queries, so they are never served from the compile boundary)"
+                    } else {
+                        ""
+                    };
+                    format!(
+                        "sql_file {sql_ref:?}: not served from the compile boundary and this node \
+                         holds no workspace files{hint}"
+                    )
+                })?;
+            let full_path = validate_workspace_relative_path(root, &sql_ref)
+                .map_err(|e| format!("sql_file {sql_ref:?}: {e}"))?;
+            tokio::fs::read_to_string(&full_path)
+                .await
+                .map_err(|e| format!("failed to read SQL file {}: {e}", full_path.display()))
+        }
+    }
 }
 
 /// Build the SQL renderer context by rendering each entry of the task's
@@ -153,11 +211,33 @@ async fn execute_semantic_query(
     let query_config: SemanticQueryConfig = serde_json::from_value(cfg.clone())
         .map_err(|e| format!("failed to parse semantic query config: {e}"))?;
 
-    // BACKLOG: same as the solver — the semantic scan directory is
-    // `context_root()`, not the workspace root.
-    let scan_path = workspace
-        .workspace_path()
-        .ok_or_else(|| "semantic_query: this node holds no workspace files".to_string())?;
+    // `context_root()`, not `workspace_path()` — the BACKLOG this replaces, and
+    // the same defect `sql_file` had one function up.
+    //
+    // `workspace_path()` returns `Some` on a worker because the manager DECLARES
+    // a working copy while the volume is absent, so the old `ok_or_else` guard
+    // passed and the scan below ran against a directory that is not there. That
+    // is worse than the `sql_file` case it mirrors: an absent directory yields
+    // ZERO views rather than an error, so the step did not fail — it compiled a
+    // query against an empty catalog and returned a wrong answer, or died later
+    // with a shapeless "no databases configured".
+    //
+    // `context_root()` already does the right thing per role: on `Serve` /
+    // `Worker` it materialises the promoted revision's semantic views, topics,
+    // automations and verified `.sql` into a tempdir (`materialise_agent_context`)
+    // and hands back that path; on `Ide` / `All` it hands back the working copy
+    // unchanged. Binding it to a local is load-bearing — `ContextRoot` owns the
+    // `TempDir` guard, so letting it drop before the scan would delete the very
+    // directory being scanned.
+    let context_root = workspace.context_root().await;
+    let scan_path = context_root.path();
+    if !scan_path.is_dir() {
+        return Err(
+            "semantic_query: no semantic context on this node — the workspace has no promoted \
+             revision to materialise and no working copy to read"
+                .to_string(),
+        );
+    }
     let databases = workspace.database_configs();
     let preagg = workspace.preagg_context();
     // Every automation step compiling a semantic query used to rebuild the
@@ -165,10 +245,20 @@ async fn execute_semantic_query(
     // build, per step, per run.
     let compiled = match workspace.semantic_engine_cache() {
         Some((cache, workspace_id)) => {
-            // `scan_path` above is `workspace_path()` — this node's working
-            // copy — so that is the source, whatever revision the context is
-            // pinned to.
-            let key = oxy_airlayer_compat::EngineKey::working_copy(workspace_id, &databases);
+            // Key by the source that was actually SCANNED. That used to be
+            // unconditionally the working copy; since the scan now runs against
+            // `context_root()`, it is a materialised revision on a worker and
+            // the working copy on an ide. `ContextRoot::revision()` reports
+            // which, and `for_source` turns it into the matching key.
+            //
+            // Keeping `working_copy` here would have been a staleness bug, not
+            // a crash: every revision would collide on one cache entry, so a
+            // promote would appear not to take effect on the fleet.
+            let key = oxy_airlayer_compat::EngineKey::for_source(
+                workspace_id,
+                context_root.revision(),
+                &databases,
+            );
             crate::semantic::resolve_and_compile_cached(
                 &cache,
                 key,
@@ -695,6 +785,167 @@ fn ipv4_blocked(v4: &std::net::Ipv4Addr) -> bool {
         || v4.is_link_local()
         || v4.is_unspecified()
         || v4.is_broadcast()
+}
+
+#[cfg(test)]
+mod sql_file_tests {
+    use super::load_sql_body;
+    use crate::workspace::WorkspaceContext;
+    use async_trait::async_trait;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+
+    /// A host that records what it was asked for, so a test can assert the
+    /// filesystem was never consulted rather than only that the result looked
+    /// right.
+    struct FakeHost {
+        answer: Result<Option<String>, String>,
+        /// Reported as this node's working copy. `None` models a worker.
+        root: Option<PathBuf>,
+        asked: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl WorkspaceContext for FakeHost {
+        fn workspace_path(&self) -> Option<&Path> {
+            self.root.as_deref()
+        }
+        fn database_configs(&self) -> Vec<oxy_airlayer_compat::DatabaseConfig> {
+            vec![]
+        }
+        async fn list_automation_files(&self) -> Result<Vec<PathBuf>, String> {
+            Ok(vec![])
+        }
+        async fn resolve_automation_yaml(
+            &self,
+            _r: &str,
+        ) -> Result<String, crate::WorkspaceReadError> {
+            unreachable!("not exercised by these tests")
+        }
+        async fn get_connector(
+            &self,
+            _name: &str,
+        ) -> Result<Arc<dyn agentic_connector::DatabaseConnector>, String> {
+            // These tests stop at the SQL body; nothing here executes a query.
+            unreachable!("not exercised by these tests")
+        }
+        async fn get_integration(
+            &self,
+            _name: &str,
+        ) -> Result<crate::workspace::IntegrationConfig, String> {
+            unreachable!("not exercised by these tests")
+        }
+        async fn resolve_sql_file(&self, sql_ref: &str) -> Result<Option<String>, String> {
+            self.asked.lock().unwrap().push(sql_ref.to_string());
+            self.answer.clone()
+        }
+    }
+
+    fn host(answer: Result<Option<String>, String>, root: Option<PathBuf>) -> FakeHost {
+        FakeHost {
+            answer,
+            root,
+            asked: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// The happy path that makes a volume-less worker viable at all: served
+    /// from Postgres, with no working copy anywhere in sight.
+    #[tokio::test]
+    async fn boundary_hit_is_used_without_a_working_copy() {
+        let h = host(Ok(Some("SELECT 1".into())), None);
+        assert_eq!(
+            load_sql_body(&h, "sql/rollup.sql").await.unwrap(),
+            "SELECT 1"
+        );
+    }
+
+    /// `Err` must NOT fall through to the filesystem. Modelled with a root that
+    /// really exists and holds a DIFFERENT body — so if the ordering ever
+    /// regressed to "try the FS on error", this test would see the disk copy
+    /// instead of the host's error.
+    #[tokio::test]
+    async fn a_boundary_error_never_falls_through_to_the_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("sql")).unwrap();
+        std::fs::write(dir.path().join("sql/rollup.sql"), "SELECT 'from disk'").unwrap();
+
+        let h = host(Err("pool timed out".into()), Some(dir.path().to_path_buf()));
+        let err = load_sql_body(&h, "sql/rollup.sql").await.unwrap_err();
+        assert!(err.contains("pool timed out"), "got {err}");
+        assert!(
+            !err.contains("from disk"),
+            "the on-disk copy must not have answered: {err}"
+        );
+    }
+
+    /// The #3056 failure in miniature: a miss on a node with no working copy
+    /// must say so legibly rather than surface as a raw ENOENT.
+    #[tokio::test]
+    async fn a_miss_with_no_working_copy_is_legible() {
+        let h = host(Ok(None), None);
+        let err = load_sql_body(&h, "sql/rollup.sql").await.unwrap_err();
+        assert!(
+            err.contains("holds no workspace files"),
+            "expected the node-shaped message, got {err}"
+        );
+        assert!(
+            !err.contains("No such file"),
+            "must not degrade to a raw ENOENT: {err}"
+        );
+    }
+
+    /// `workspace_path()` is `Some` on a worker because the manager DECLARES a
+    /// working copy while the volume is absent. The `is_dir()` filter is what
+    /// separates "declared" from "present" — without it, this case is the
+    /// ENOENT that took the pipeline down.
+    #[tokio::test]
+    async fn a_declared_but_absent_working_copy_is_treated_as_absent() {
+        let h = host(Ok(None), Some(PathBuf::from("/definitely/not/here")));
+        let err = load_sql_body(&h, "sql/rollup.sql").await.unwrap_err();
+        assert!(
+            err.contains("holds no workspace files"),
+            "expected the node-shaped message, got {err}"
+        );
+    }
+
+    /// A `./`-prefixed ref must reach the boundary under the walker's spelling.
+    /// Before normalisation this missed a row that existed and fell back to the
+    /// filesystem — the instance affinity this path removes, reachable by a
+    /// spelling.
+    #[tokio::test]
+    async fn a_dot_slash_ref_is_normalised_before_the_lookup() {
+        let h = host(Ok(Some("SELECT 1".into())), None);
+        load_sql_body(&h, "./sql/./rollup.sql").await.unwrap();
+        assert_eq!(h.asked.lock().unwrap().as_slice(), &["sql/rollup.sql"]);
+    }
+
+    /// Containment runs before either backend, so a traversal never becomes a
+    /// lookup key.
+    #[tokio::test]
+    async fn traversal_is_rejected_before_the_boundary_is_asked() {
+        let h = host(Ok(Some("SELECT 1".into())), None);
+        let err = load_sql_body(&h, "../../etc/passwd").await.unwrap_err();
+        assert!(err.contains(".."), "got {err}");
+        assert!(
+            h.asked.lock().unwrap().is_empty(),
+            "the boundary must not be asked for an escaping ref"
+        );
+    }
+
+    /// `modeling/` and `schemas/` `.sql` never compile as verified queries, so
+    /// the miss is about the subtree, not about the node.
+    #[tokio::test]
+    async fn carve_out_paths_say_why_they_can_never_be_served() {
+        for (path, needle) in [
+            ("modeling/proj/models/x.sql", "Airform"),
+            ("schemas/001_init.sql", "schema migrations"),
+        ] {
+            let h = host(Ok(None), None);
+            let err = load_sql_body(&h, path).await.unwrap_err();
+            assert!(err.contains(needle), "for {path}: {err}");
+        }
+    }
 }
 
 #[cfg(test)]

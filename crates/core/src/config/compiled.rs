@@ -186,6 +186,33 @@ pub(super) async fn resolve_automation_at(
     )
 }
 
+/// One verified query's compiled SQL body, keyed by `file_path`.
+///
+/// Returns the `content` column rather than a `definition`: a `.sql` file has
+/// no JSONB shape, its body *is* the artifact. Otherwise identical to
+/// [`resolve_automation_at`].
+///
+/// Exists because `execute_sql`'s `sql_file` used to read the workspace
+/// filesystem directly, which is fine on the `ide` singleton and fails on any
+/// node without the working copy. That became reachable when
+/// `oxy-hq/oxygen-internal#3056` moved airway pipelines onto the worker fleet:
+/// an `airway ingest -> execute_sql rollup` chain — the standard medallion
+/// gold-layer shape — failed with ENOENT on a pod that has no `/workspace`.
+/// `list_verified_queries_at` below already served the whole set to the
+/// analytics scan; this is the by-path lookup that read path needed.
+pub(super) async fn resolve_verified_query_at(
+    revision_id: Uuid,
+    file_path: &str,
+) -> Result<Option<String>, ArtifactError> {
+    Ok(
+        entity::verified_queries::Entity::find_by_id((revision_id, file_path.to_string()))
+            .one(&conn().await?)
+            .await
+            .map_err(|e| ArtifactError::Backend(e.to_string()))?
+            .map(|m| m.content),
+    )
+}
+
 /// One analytics agent's compiled `definition`, keyed by `name`.
 ///
 /// Name rather than path, because the analytics pipeline references agents by

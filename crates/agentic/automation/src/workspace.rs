@@ -106,25 +106,58 @@ pub struct ContextRoot {
     // Opaque so this crate needn't depend on `tempfile`; the host boxes the
     // `TempDir` guard in here and it drops (cleaning up) with the `ContextRoot`.
     _guard: Option<Box<dyn std::any::Any + Send + Sync>>,
+    /// The compiled revision this root was materialised from, or `None` for a
+    /// working copy. See [`ContextRoot::revision`].
+    revision: Option<uuid::Uuid>,
 }
 
 impl ContextRoot {
     /// Resolve context from an on-disk workspace path (IDE / shared-FS).
     pub fn fs(path: PathBuf) -> Self {
-        Self { path, _guard: None }
+        Self {
+            path,
+            _guard: None,
+            revision: None,
+        }
     }
 
     /// Resolve context from a materialised tempdir; `guard` owns it for the
     /// `ContextRoot`'s lifetime (typically a `tempfile::TempDir`).
-    pub fn materialised(path: PathBuf, guard: Box<dyn std::any::Any + Send + Sync>) -> Self {
+    ///
+    /// `revision_id` is the revision the tempdir was materialised FROM, and it
+    /// is required rather than optional because a caller that caches anything
+    /// derived from this root must key it by that revision — see
+    /// [`Self::revision`].
+    pub fn materialised(
+        path: PathBuf,
+        guard: Box<dyn std::any::Any + Send + Sync>,
+        revision_id: uuid::Uuid,
+    ) -> Self {
         Self {
             path,
             _guard: Some(guard),
+            revision: Some(revision_id),
         }
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Which layer source this root represents: `Some(revision)` for a
+    /// materialised compiled revision, `None` for a working copy.
+    ///
+    /// This is the bit [`WorkspaceContext::semantic_engine_cache`] deliberately
+    /// does NOT hand out — its doc says the source "only the caller knows,
+    /// because it depends on the path that caller scans". This accessor is how
+    /// the caller knows: it scanned *this* root, so this root reports the
+    /// source. Feed it to `EngineKey::for_source` / `LayerKey::for_source`.
+    ///
+    /// Getting it wrong is a staleness bug rather than a crash: caching an
+    /// engine built from revision A under a working-copy key serves it for
+    /// revision B, so a promote appears not to take effect.
+    pub fn revision(&self) -> Option<uuid::Uuid> {
+        self.revision
     }
 }
 
@@ -298,6 +331,39 @@ pub trait WorkspaceContext: Send + Sync {
     /// Mirrors `ProjectContext::resolve_agent_yaml`, the same hook shape for
     /// `.agentic.yml`.
     async fn resolve_pipeline_yaml(&self, _pipeline_ref: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
+    /// Read a `.sql` file's body from the compile boundary, keyed by its
+    /// workspace-relative path.
+    ///
+    /// Same three-way contract as [`Self::resolve_pipeline_yaml`] above, and
+    /// for the same reasons — see that doc for the full argument about why
+    /// `Err` is distinct from `Ok(None)`. In short: `Ok(Some(sql))` came from
+    /// Postgres and touched no filesystem; `Ok(None)` means "read the working
+    /// copy"; `Err` means the boundary could not be *asked*, and must not fall
+    /// through to a filesystem this node may not have.
+    ///
+    /// **The key must be the walker's normalized rel-path** — forward slashes,
+    /// no `./` prefix — because that is what `verified_queries.file_path`
+    /// holds. `step_executor` normalizes before calling; a `./`-prefixed ref
+    /// reaching here would miss a row that exists and silently degrade to the
+    /// instance affinity this hook removes.
+    ///
+    /// **The `Err` arm trades availability for consistency, deliberately.**
+    /// Unlike the pipeline path's typed `PipelineRefError::Unavailable`, this
+    /// returns a bare `String` with no retryable signal, and the root
+    /// automation task is enqueued with `policy: None` (see this crate's
+    /// `CLAUDE.md`), so nothing re-attempts it. A transient DB blip on a node
+    /// that *does* hold the working copy therefore fails a step that would
+    /// previously have read the file successfully. That is the intended
+    /// direction: a run that silently read a stale or instance-local file is
+    /// worse than one that fails visibly. If this becomes a practical problem,
+    /// the fix is a typed error here, not a fall-through.
+    ///
+    /// Defaults to `Ok(None)` so test fakes and the CLI keep their existing
+    /// filesystem behaviour without implementing it.
+    async fn resolve_sql_file(&self, _sql_ref: &str) -> Result<Option<String>, String> {
         Ok(None)
     }
 }

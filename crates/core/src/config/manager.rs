@@ -719,6 +719,31 @@ impl<S: DiskSlot> ConfigManager<S> {
         self.definition(compiled, file_path).await
     }
 
+    /// One verified query's SQL body, from whichever source this manager reads.
+    ///
+    /// Unlike the `*_definition` methods this returns the raw SQL rather than a
+    /// JSONB `definition`, so it does not go through [`Self::definition`] — that
+    /// helper's disk arm reads and parses YAML. The disk arm here is the
+    /// caller's existing filesystem read, which stays where it is: this method
+    /// answers only "is it in the compile boundary", and `Ok(None)` means
+    /// "ask the working copy".
+    ///
+    /// `Err` is deliberately NOT laundered into `Ok(None)`. A backend failure is
+    /// "could not look", and a caller that treated it as "not compiled" would
+    /// fall through to a filesystem this node may not have — the instance
+    /// affinity bug the compile boundary exists to remove.
+    pub async fn verified_query_content(
+        &self,
+        file_path: &str,
+    ) -> Result<Option<String>, ArtifactError> {
+        match self.origin {
+            Origin::Compiled { revision_id, .. } => {
+                super::compiled::resolve_verified_query_at(revision_id, file_path).await
+            }
+            Origin::Disk => Ok(None),
+        }
+    }
+
     /// One analytics agent's definition, keyed by NAME rather than by path.
     ///
     /// The name is the compile boundary's key, so the disk arm has to translate
