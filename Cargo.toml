@@ -978,7 +978,7 @@ airform-analyzer = { git = "https://github.com/oxy-hq/airform.git", rev = "3e3e8
 airform-executor = { git = "https://github.com/oxy-hq/airform.git", rev = "3e3e8288692381a989444eef874900e6db4475b1" }
 
 [workspace.package]
-version = "0.5.143"
+version = "0.5.144"
 authors = ["oxy engineers"]
 description = "Oxy"
 documentation = "https://oxygen-hq.com/docs"

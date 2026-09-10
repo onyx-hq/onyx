@@ -2,12 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.144] - 2026-09-10
+
+### 🚀 Features
+
+- Custom-app webhooks — the platform verifies the sender, the manifest declares the secret (#3137)
+- Custom-app secrets — a write path, and a panel that says what is missing (#3150)
+
+### 🐛 Bug Fixes
+
+- Router health probe is a metric, not 67% of the log volume (#3149)
+- Serve execute_sql's sql_file from the compile boundary (#3151)
+
+### 💼 Other
+
+- *(deps)* Bump softprops/action-gh-release from 3.0.2 to 3.0.3 (#3143)
+- *(deps)* Bump lewagon/wait-on-check-action from 1.8.1 to 1.9.1 (#3144)
+
+### ⚙️ Miscellaneous Tasks
+
+- Local airhouse stack tracks image 0.1.48 (#3139)
+
 ## [0.5.143] - 2026-09-09
 
 ### 🚀 Features
 
 - Custom apps sign out — links.login on the shell context, signOut() in the SDK (#3135)
 - *(sp_api)* Bump airway to 0.1.41 and reach the Vendor Central reports (#3134)
+
+### ⚙️ Miscellaneous Tasks
+
+- Release 0.5.143 (#3136)
 
 ## [0.5.142] - 2026-09-08
 
