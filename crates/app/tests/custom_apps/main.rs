@@ -13,6 +13,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod app_scoped_secrets;
 mod custom_app_access_control;
 mod custom_app_activity_roles;
 mod custom_app_platform_runtime;

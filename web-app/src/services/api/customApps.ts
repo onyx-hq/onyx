@@ -2,6 +2,7 @@ import type {
   AppAvailability,
   AppBuildHistory,
   AppFunctionSummary,
+  AppSecrets,
   BatchAppResult,
   ClientError,
   CreateAppRequest,
@@ -175,6 +176,49 @@ export const CustomAppsService = {
       input ?? undefined
     );
     return response.data;
+  },
+
+  // ── App-scoped secrets (`apps/<app_id>/<KEY>` — what `ctx.env` reads) ──────
+
+  /** The app's secrets: what its active build declares, unioned with what is
+   *  actually stored. Values are never included. */
+  async listSecrets(id: string): Promise<AppSecrets> {
+    const response = await apiClient.get(`/customer-apps/${id}/secrets`);
+    return response.data;
+  },
+
+  /** Create or rotate one key. The only write path there is — the project
+   *  secrets API rejects the `/` in an app-scoped name. */
+  async setSecret(id: string, key: string, value: string): Promise<void> {
+    await apiClient.post(`/customer-apps/${id}/secrets`, { key, value });
+  },
+
+  async deleteSecret(id: string, key: string): Promise<void> {
+    await apiClient.delete(`/customer-apps/${id}/secrets/${encodeURIComponent(key)}`);
+  },
+
+  /** Tenant-side create/rotate, on the workspace's own route. Same handler as
+   *  `setSecret`, reached with a `WorkspaceAdmin` guard instead of staff
+   *  standing — this is the only app-secret verb the workspace surface needs,
+   *  since the project-secrets routes already list, reveal, rotate and delete
+   *  these rows by id. */
+  async setWorkspaceAppSecret(
+    workspaceId: string,
+    appId: string,
+    key: string,
+    value: string
+  ): Promise<void> {
+    await apiClient.post(`/${workspaceId}/custom-apps/${appId}/secrets`, { key, value });
+  },
+
+  /** Read one value back. Deliberately not a query — a decrypted secret should
+   *  never land in the react-query cache, so this is called on demand and the
+   *  result held only as long as the row is expanded. */
+  async revealSecret(id: string, key: string): Promise<string> {
+    const response = await apiClient.get<{ key: string; value: string }>(
+      `/customer-apps/${id}/secrets/${encodeURIComponent(key)}/value`
+    );
+    return response.data.value;
   },
 
   /**

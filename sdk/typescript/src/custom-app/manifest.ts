@@ -207,6 +207,37 @@ export interface OxyAppManifest {
    */
   ask?: { agent?: string; suggestedQuestions?: string[] };
   /**
+   * The secrets this app expects, keyed by env-var name — the app's
+   * `.env.example`, declared rather than written in a README.
+   *
+   * These are the keys your functions read as `ctx.env.KEY`. Declaring one puts
+   * it in the app's Secrets surface (staff console → app → Secrets, and the
+   * workspace's own settings) as a row to fill in, so a fresh deploy says what
+   * is still missing instead of failing at the first invocation. Every function's
+   * `webhook.secretVar` is folded in automatically — no need to repeat it here.
+   *
+   * **Names only, never values.** A manifest ships inside the bundle and is
+   * fetchable over the app's own host; putting a secret in one publishes it.
+   * Values are set out-of-band on the Secrets surface, or by
+   * `ctx.secrets.set` from a function holding the `secrets.write` capability.
+   *
+   * App-level rather than per-function, because a secret is app-scoped by
+   * construction: two functions sharing `STRIPE_API_KEY` read the same value,
+   * so it can only be described once.
+   *
+   * ```jsonc
+   * "env": {
+   *   "STRIPE_API_KEY":    { "required": true, "description": "Restricted key, Dashboard → Developers" },
+   *   "SLACK_WEBHOOK_URL": { "description": "Optional ops channel" }
+   * }
+   * ```
+   *
+   * Read by the platform at **publish time** (like {@link OxyAppStorageManifest}),
+   * so the block is documented here but not round-tripped through the dev-time
+   * manifest fetch.
+   */
+  env?: Record<string, OxyAppEnvDeclaration>;
+  /**
    * Optional app-level storage policy. Distinct from the per-function
    * `storage: { read, write }` capability: those gate what one function may
    * call, while this governs the app's whole asset silo, which every function
@@ -238,6 +269,25 @@ export interface OxyAppManifest {
    * round-tripped here). Default: `true`.
    */
   analytics?: boolean;
+}
+
+/** One declared secret — an entry in the `env` block of `oxy-app.json`. */
+export interface OxyAppEnvDeclaration {
+  /**
+   * Flag the key as **Missing** (rather than merely absent) while nothing is
+   * stored for it, and count it in the app's missing-secrets badge.
+   *
+   * Advisory, not a gate: a publish is never blocked on an unset key, because
+   * the first publish is exactly when nobody could have set one yet.
+   *
+   * Default: `false` — a declaration is documentation first.
+   */
+  required?: boolean;
+  /**
+   * Shown beside the key on the Secrets surface. Say what it is and where to
+   * get one — this is the text that saves someone a Slack message.
+   */
+  description?: string;
 }
 
 /** Browser-runtime performance opt-outs — the `performance` block in `oxy-app.json`. */

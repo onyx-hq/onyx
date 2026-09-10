@@ -220,6 +220,45 @@ export interface AppFunctionSummary {
   input_example?: unknown;
 }
 
+/** Where a secret's declaration came from. `undeclared` means it is stored but
+ *  nothing in the active build asks for it — normal for a key a function wrote
+ *  itself via `ctx.secrets.set`, such as a refreshed OAuth token. */
+export type AppSecretSource = "manifest" | "webhook" | "undeclared";
+
+/** One key in an app's secrets view: what the build asks for, unioned with what
+ *  is actually stored. A value is never included — reveal is a separate call. */
+export interface AppSecretEntry {
+  /** Bare key (`STRIPE_API_KEY`); the `apps/<id>/` storage prefix never leaks. */
+  key: string;
+  is_set: boolean;
+  /** The active build asks for this key. */
+  declared: boolean;
+  /** Declared `required` and worth flagging while unset. */
+  required: boolean;
+  source: AppSecretSource;
+  description?: string;
+  /** Present only when set — the underlying project-secret row. */
+  secret_id?: string;
+  updated_at?: string;
+  updated_by_email?: string;
+}
+
+/** An app's secrets, reconciled against what its active build declares.
+ *  See `GET /customer-apps/{id}/secrets`. */
+export interface AppSecrets {
+  app_id: string;
+  app_slug: string;
+  app_name: string;
+  entries: AppSecretEntry[];
+  /** Required keys with nothing stored — the "not ready" count. */
+  missing_required: number;
+  /** The build the declarations were read from (published, else draft). */
+  declaring_build_id?: string;
+  /** The manifest has an `env` block that could not be parsed. Shown rather
+   *  than swallowed, so a typo doesn't look like an app declaring nothing. */
+  declaration_error?: string;
+}
+
 /** One recorded invocation of a function (route / schedule / manual job). */
 export interface FunctionInvocation {
   id: string;

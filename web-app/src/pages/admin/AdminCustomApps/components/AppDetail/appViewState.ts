@@ -28,6 +28,7 @@ export type SectionId =
   | "builds"
   | "access"
   | "functions"
+  | "secrets"
   | "availability"
   | "logs"
   | "activity"
@@ -56,6 +57,7 @@ const SECTIONS: readonly SectionId[] = [
   "builds",
   "access",
   "functions",
+  "secrets",
   "availability",
   "logs",
   "activity",

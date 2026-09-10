@@ -51,7 +51,7 @@ impl From<SecretInfo> for SecretResponse {
 }
 
 /// Resolve a set of user UUIDs to their emails in one query.
-async fn resolve_user_emails(
+pub(crate) async fn resolve_user_emails(
     db: &impl sea_orm::ConnectionTrait,
     ids: &[Uuid],
 ) -> HashMap<Uuid, String> {

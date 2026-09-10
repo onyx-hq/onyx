@@ -13,13 +13,13 @@ use axum::routing::{delete, get, post, put};
 use agentic_http::{AgenticState, airway_router, automation_router, router as agentic_router};
 
 use crate::api::{
-    agent, api_keys, app, apps, artifacts, automation, chart, competitors, compile, data,
-    data_repo, database, execution_analytics, exported_chart, file, foot_traffic, integration,
-    local_setup, message, metric_anomalies, metric_tree, metric_tree_probe, metric_tree_projection,
-    metrics, modeling, org_subdomain, pipeline, preagg, result_files, run, schedules, semantic,
-    simulation, task, test_file, test_project_run, test_run, thread, traces, video,
-    workspace_custom_apps, workspace_logo, workspace_members, workspace_oxy_access, workspaces,
-    world_model, world_model_graph,
+    agent, api_keys, app, apps, artifacts, automation, chart, competitors, compile,
+    custom_apps_secrets, data, data_repo, database, execution_analytics, exported_chart, file,
+    foot_traffic, integration, local_setup, message, metric_anomalies, metric_tree,
+    metric_tree_probe, metric_tree_projection, metrics, modeling, org_subdomain, pipeline, preagg,
+    result_files, run, schedules, semantic, simulation, task, test_file, test_project_run,
+    test_run, thread, traces, video, workspace_custom_apps, workspace_logo, workspace_members,
+    workspace_oxy_access, workspaces, world_model, world_model_graph,
 };
 
 use oxy_shared::fleet_role::RouteRole;
@@ -116,6 +116,17 @@ pub(super) fn build_workspace_routes(
         )
         .route_fleet("/org-subdomain", get(org_subdomain::get_org_subdomain))
         .route_fleet("/custom-apps", get(workspace_custom_apps::list_custom_apps))
+        // Tenant-side app-secret CREATION (`apps/<app_id>/<KEY>`). POST only:
+        // list / reveal / rotate / delete already work on the project-secrets
+        // routes, which address a row by id and so never hit the name validator
+        // that rejects the `/`. Same handler as the staff
+        // `/customer-apps/{id}/secrets` mount, with a `WorkspaceAdmin` guard and
+        // a check that the app belongs to the workspace in the path. Postgres
+        // only, so `FleetOk`. See `custom_apps_secrets`.
+        .route_fleet(
+            "/custom-apps/{app_id}/secrets",
+            post(custom_apps_secrets::workspace_set),
+        )
         .route_fleet("/logo", get(workspace_logo::get_workspace_logo))
         .nest("/apps", build_app_routes(&app_state))
         // NOT under `/agentic-airway`, which is an `IdeOnly` `{*rest}` wildcard

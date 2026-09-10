@@ -37,6 +37,7 @@ pub mod custom_apps_publish;
 pub mod custom_apps_publish_authz;
 pub mod custom_apps_publish_oidc;
 pub mod custom_apps_scaffold;
+pub mod custom_apps_secrets;
 pub mod custom_apps_serve;
 pub mod custom_apps_shell_context;
 pub mod custom_apps_source;

@@ -25,6 +25,7 @@ import { AppSettings } from "../AppSettings";
 import { Availability } from "../Availability";
 import { BuildHistory } from "../BuildHistory";
 import { Functions } from "../Functions";
+import { Secrets, SecretsBadge } from "../Secrets";
 import { DockControls } from "./DockControls";
 import { isSectionOpen } from "./sectionOpen";
 
@@ -47,6 +48,10 @@ const DEFAULT_OPEN: Record<SectionId, boolean> = {
   // inside answers the question without the section needing to be expanded.
   access: false,
   functions: false,
+  // Collapsed like its neighbours: the header badge counts the keys this app is
+  // missing, which is the whole question when nothing is wrong, and expanding
+  // is only needed to act on one.
+  secrets: false,
   // Open by default, unlike its neighbours: it is the section an operator opens
   // the dossier FOR during an incident, and a collapsed "is it up" answer is a
   // click away from being no answer at all.
@@ -190,6 +195,15 @@ export const DossierBody = ({
             <Functions appId={app.id} selected={fn ?? null} onSelect={onFnChange ?? noop} />
           </div>
         </DossierSection>
+        <DossierSection
+          {...section("secrets")}
+          title='Secrets'
+          badge={<SecretsBadge appId={app.id} />}
+        >
+          <div className='p-4 pt-0'>
+            <Secrets appId={app.id} />
+          </div>
+        </DossierSection>
         <DossierSection {...section("availability")} title='Availability'>
           <Availability orgSlug={app.org_slug} appSlug={app.slug} />
         </DossierSection>
@@ -220,6 +234,7 @@ export const DossierBody = ({
 const DossierSection = ({
   id,
   title,
+  badge,
   open,
   onOpenChange,
   children
@@ -230,6 +245,9 @@ const DossierSection = ({
    */
   id: SectionId;
   title: string;
+  /** Optional status shown beside the title, so a section that is collapsed by
+   *  default can still say something is wrong inside it. */
+  badge?: React.ReactNode;
   open: boolean;
   onOpenChange: (next: boolean) => void;
   children: React.ReactNode;
@@ -245,6 +263,7 @@ const DossierSection = ({
       <span className='font-medium text-[10px] text-muted-foreground uppercase tracking-[0.16em]'>
         {title}
       </span>
+      {badge}
     </CollapsibleTrigger>
     <CollapsibleContent>{children}</CollapsibleContent>
   </Collapsible>

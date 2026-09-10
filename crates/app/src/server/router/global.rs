@@ -334,6 +334,26 @@ pub(super) fn build_global_routes(app_state: &AppState) -> RoleRouter {
                     "/{id}/api-keys",
                     post(crate::server::api::custom_apps_api_keys::mint),
                 )
+                // App-scoped secrets (`apps/<app_id>/<KEY>` — the namespace
+                // `ctx.env` reads). The list is reconciled against what the
+                // active build DECLARES, so a fresh deploy says which keys are
+                // still missing instead of failing at the first invocation.
+                // Creation lives only here and on the tenant twin: the project
+                // secrets API rejects `/` in a name, which is why an app secret
+                // had no write path at all. See `custom_apps_secrets`.
+                .route(
+                    "/{id}/secrets",
+                    get(crate::server::api::custom_apps_secrets::admin_list)
+                        .post(crate::server::api::custom_apps_secrets::admin_set),
+                )
+                .route(
+                    "/{id}/secrets/{key}",
+                    delete(crate::server::api::custom_apps_secrets::admin_delete),
+                )
+                .route(
+                    "/{id}/secrets/{key}/value",
+                    get(crate::server::api::custom_apps_secrets::admin_reveal),
+                )
                 // Trusted-publishing config: register / list / remove the GitHub
                 // workflows allowed to OIDC-publish this app. See
                 // `custom_apps_publish_oidc`.
