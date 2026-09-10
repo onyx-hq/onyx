@@ -18,6 +18,8 @@
 //! | `oxy_compile_promotion_lag` | gauge | (none) | `revisions` ⋈ `workspaces` |
 //! | `oxy_tasks_requeued_total` | counter | (none) | `agentic_runtime::crud::TASKS_REQUEUED` |
 //! | `oxy_tasks_dead_lettered_total` | counter | (none) | `agentic_runtime::crud::TASKS_DEAD_LETTERED` |
+//! | `oxy_router_probes_received_total` | counter | (none) | `agentic_runtime::router::PROBES_RECEIVED` |
+//! | `oxy_router_last_probe_received_timestamp_seconds` | gauge | (none) | `agentic_runtime::router::LAST_PROBE_RECEIVED_MILLIS` |
 //! | `oxy_metrics_scrape_db_ok` | gauge=0/1 | (none) | this replica's DB read status this scrape |
 //!
 //! The queue-depth rows group by the task's kind, which `agentic_task_queue`
@@ -227,6 +229,12 @@ pub async fn metrics(State(state): State<MetricsState>) -> Response {
     );
     push_compile_health(&mut body, &compile_health.unwrap_or_default());
     push_reap_counters(&mut body);
+    push_router_probe(
+        &mut body,
+        agentic_runtime::router::PROBES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed),
+        agentic_runtime::router::LAST_PROBE_RECEIVED_MILLIS
+            .load(std::sync::atomic::Ordering::Relaxed),
+    );
 
     body.push_str(
         // Names both reads: the gauge drops to 0 for a compile-health
@@ -401,6 +409,96 @@ fn push_reap_counters(body: &mut String) {
         "oxy_tasks_dead_lettered_total {}\n",
         agentic_runtime::crud::TASKS_DEAD_LETTERED.load(std::sync::atomic::Ordering::Relaxed)
     ));
+}
+
+/// Health of the LISTEN/NOTIFY wake pipeline, as seen by this process.
+///
+/// The task router fires a probe on `oxy_health_probe` every 60s and
+/// every listener — on this instance and on every peer — records the
+/// receipt. A healthy pipeline therefore ticks continuously; a pipeline
+/// where Postgres has silently stopped delivering notifications goes
+/// quiet while the connection still answers `SELECT 1`. That silent
+/// stall is the failure this pair exists to catch, and it is the reason
+/// the signal has to be a *timestamp* rather than a rate: the question
+/// is "how long since the last one", not "how many".
+///
+/// Both are process-local, so they carry the same replica caveat as the
+/// reap counters above — and one more besides. This endpoint is mounted
+/// only on the worker health server (`worker_health`), but
+/// `background::start` runs a router in every `oxy serve` and `oxy ide`
+/// process too. Those replicas receive probes that nothing scrapes.
+/// That is acceptable rather than merely tolerated: the worker's claim
+/// loop is the thing whose latency actually depends on NOTIFY delivery,
+/// so the fleet that matters is the fleet that is covered. A serve-only
+/// stall shows up as claim latency, not as a missing wake.
+///
+/// **The gauge is absent, never zero, before the first probe.**
+/// `background::start` deliberately lets one full interval elapse
+/// before the first emission, so a freshly started pod has legitimately
+/// seen nothing. Emitting `0` there would make `time() - gauge` read as
+/// ~57 years and page every rollout. Alerting therefore takes THREE
+/// matchers for three disjoint failures, exactly as
+/// `oxy_metrics_scrape_db_ok` below documents for its own:
+///
+/// ```text
+/// (time() - oxy_router_last_probe_received_timestamp_seconds{job="oxy-worker"}) > 300
+///     delivery has STOPPED. Three missed 60s probes, with a for: 5m.
+///     Per-target, and the primary matcher.
+/// oxy_router_probes_received_total{job="oxy-worker"} == 0
+///     this replica has never received one, while its peers are fine.
+///     Per-target, for: 15m.
+/// absent(oxy_router_last_probe_received_timestamp_seconds{job="oxy-worker"})
+///     TOTAL loss — every target gone, or discovery broke, which the
+///     other two cannot catch because there are no series to evaluate.
+/// ```
+///
+/// **The counter is what makes the per-replica check possible, and it is
+/// not optional corroboration.** `absent()` is quiet whenever *any*
+/// replica reports, so on its own it catches a never-delivering pod only
+/// if the whole fleet is dead — one bad pod among healthy peers emits no
+/// gauge series at all, leaving staleness with nothing to evaluate and
+/// `absent()` masked by its neighbours. That is the same partial-blindness
+/// defect `internal-docs/worker-fleet.md` names for
+/// `oxy_metrics_scrape_db_ok`, and the reason `oxy_router_probes_received_total`
+/// is exported unconditionally at `0`: a per-target `== 0` is a real
+/// series to match on, where a missing gauge is not.
+///
+/// For capacity rather than alerting, `rate()` over the counter should sit
+/// at roughly (peer count / 60) per second, and a step change means
+/// instances joined or left rather than that delivery broke. Aggregate
+/// with `sum` across replicas, like the other process-local counters.
+///
+/// This replaced a per-receipt `info` log line. See
+/// `agentic_runtime::router::PROBES_RECEIVED` for that history — the
+/// short version is that the line cost 67% of prod's entire oxy log
+/// volume and landed in a store that carries no alerts.
+///
+/// Takes its two readings as arguments rather than loading the statics
+/// itself, unlike [`push_reap_counters`]: the absent-vs-zero branch
+/// below is the whole point of this function, and a test that has to
+/// mutate a process-wide static to reach it would race every other test
+/// in the same binary.
+fn push_router_probe(body: &mut String, probes_received: u64, last_probe_millis: i64) {
+    body.push_str(
+        "# HELP oxy_router_probes_received_total Health probes received on the LISTEN/NOTIFY wake channel by this process, from any instance including itself. PROCESS-LOCAL: aggregate with sum across replicas; a restart resets it to 0.\n\
+         # TYPE oxy_router_probes_received_total counter\n",
+    );
+    body.push_str(&format!(
+        "oxy_router_probes_received_total {probes_received}\n"
+    ));
+
+    // Absent, not zero, until the first probe lands — see the doc
+    // comment. A zero timestamp is 1970 and would page on every deploy.
+    if last_probe_millis > 0 {
+        body.push_str(
+            "# HELP oxy_router_last_probe_received_timestamp_seconds UNIX time of the most recent LISTEN/NOTIFY health probe seen by this process. Alert on staleness — (time() - this) > 300 is three missed 60s probes — plus a scoped absent() for a pipeline that never delivered at all. ABSENT until the first probe, which is one full interval after start by design.\n",
+        );
+        body.push_str("# TYPE oxy_router_last_probe_received_timestamp_seconds gauge\n");
+        body.push_str(&format!(
+            "oxy_router_last_probe_received_timestamp_seconds {:.3}\n",
+            last_probe_millis as f64 / 1000.0
+        ));
+    }
 }
 
 #[derive(FromQueryResult, Debug, Clone)]
@@ -825,5 +923,63 @@ mod tests {
         push_queue_depth(&mut body, &fold_queue_depth(&[]));
         assert!(body.lines().all(|l| l.starts_with('#')), "{body}");
         assert!(body.contains("# TYPE oxy_queue_depth_queued gauge"));
+    }
+
+    /// The alert is `time() - gauge > 300`, so a pre-first-probe pod
+    /// emitting `0` would compute ~57 years of staleness and page on
+    /// every rollout. Absence is the only safe encoding, and the
+    /// scoped `absent()` matcher in the VMRule is what covers it.
+    #[test]
+    fn probe_gauge_is_absent_until_the_first_probe() {
+        let mut body = String::new();
+        push_router_probe(&mut body, 0, 0);
+
+        assert!(
+            !body.contains("oxy_router_last_probe_received_timestamp_seconds"),
+            "a never-probed process must emit no timestamp series at all, \
+             not even a HELP header a scraper could turn into a 0:\n{body}"
+        );
+        // The counter is still exported: 0 is a meaningful reading for a
+        // counter, and its absence would be indistinguishable from a
+        // scrape that never reached this function.
+        assert!(
+            body.contains("oxy_router_probes_received_total 0"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn probe_gauge_renders_millis_as_fractional_seconds() {
+        let mut body = String::new();
+        push_router_probe(&mut body, 42, 1_788_955_660_699);
+
+        assert!(
+            body.contains("oxy_router_probes_received_total 42"),
+            "{body}"
+        );
+        // Prometheus timestamps are seconds. Truncating to whole seconds
+        // would be fine for a 300s alert but loses the sub-second detail
+        // that makes two adjacent probes distinguishable in a graph.
+        assert!(
+            body.contains("oxy_router_last_probe_received_timestamp_seconds 1788955660.699"),
+            "{body}"
+        );
+        assert!(
+            body.contains("# TYPE oxy_router_last_probe_received_timestamp_seconds gauge"),
+            "{body}"
+        );
+    }
+
+    /// A negative reading cannot come from the router — it stores
+    /// `SystemTime::now()` millis or 0 — but the exporter must not turn
+    /// one into a timestamp before 1970 if that ever changes.
+    #[test]
+    fn probe_gauge_treats_a_negative_reading_as_never() {
+        let mut body = String::new();
+        push_router_probe(&mut body, 1, -5);
+        assert!(
+            !body.contains("oxy_router_last_probe_received_timestamp_seconds"),
+            "{body}"
+        );
     }
 }

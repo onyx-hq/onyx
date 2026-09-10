@@ -21,8 +21,15 @@
 //!    pipeline is end-to-end functional. Catches the failure mode
 //!    where the connection looks healthy (keepalive succeeds) but
 //!    server-side notification delivery has stalled. The router
-//!    records `last_probe_received_at` on every receipt; alerting
-//!    monitors absence of `router.health_probe_received` events.
+//!    records `last_probe_received_at` on every receipt and bumps the
+//!    process-wide [`crate::orchestrator::router::PROBES_RECEIVED`] /
+//!    [`crate::orchestrator::router::LAST_PROBE_RECEIVED_MILLIS`],
+//!    which the worker's `/metrics` endpoint exports as
+//!    `oxy_router_last_probe_received_timestamp_seconds`. Alerting is a
+//!    staleness expression on that gauge in VictoriaMetrics. It used to
+//!    be absence-detection over an `info` log line, which cost O(peers
+//!    squared) lines per interval and landed in a store that carries no
+//!    alerts — see `PROBES_RECEIVED` for the measurements.
 //!
 //! ## Why one task, not three
 //!

@@ -75,7 +75,7 @@
 //!   `SKIP LOCKED` sort out the claim race.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -101,10 +101,63 @@ pub const TASK_ENQUEUED_CHANNEL: &str = "oxy_task_enqueued";
 /// probes when deciding whether to wake claim-loop waiters. The
 /// background task fires probes on a slow tick; every listener
 /// (on this instance + every peer) records the receipt time. A
-/// flat-line `router.health_probe_received` trace event means the
-/// NOTIFY pipeline is silently broken even if the connection looks
-/// healthy.
+/// stalled [`LAST_PROBE_RECEIVED_MILLIS`] — surfaced as the
+/// `oxy_router_last_probe_received_timestamp_seconds` gauge on the
+/// worker's `/metrics` — means the NOTIFY pipeline is silently
+/// broken even if the connection looks healthy.
+///
+/// Do **not** watch the `router.health_probe_received` log event for
+/// this. It is `debug` and prod runs at `OXY_LOG_LEVEL=info`, so it
+/// flat-lines permanently and would detect nothing; see
+/// [`PROBES_RECEIVED`] for why it stopped being `info`.
 pub const HEALTH_PROBE_CHANNEL: &str = "oxy_health_probe";
+
+/// Process-wide count of health probes received on
+/// [`HEALTH_PROBE_CHANNEL`] by any listener in this process.
+///
+/// **Why a metric and not a log line.** The probe answers "is
+/// LISTEN/NOTIFY still delivering?", which is a question about
+/// *absence*: the healthy state produces no news. Encoding that as one
+/// `info` line per receipt costs O(emitters x listeners) lines per
+/// interval — every instance NOTIFYs on a 60s tick and every listener
+/// on every instance logs it — so the volume grows quadratically with
+/// fleet size. Measured 2026-09-09: 7,260 lines/hour in prod, **67% of
+/// every log line the three oxy fleets emitted**, and 56% in dev.
+///
+/// It also put the signal somewhere no alert can read it. The line was
+/// deliberately `info` "because ops alerts on absence of this event",
+/// but the store it lands in is HyperDX, and
+/// `infrastructure/docs/hyperdx.md` makes HyperDX the *investigation*
+/// surface explicitly: no alerts, nothing load-bearing. Alerting is
+/// Grafana + VictoriaMetrics, which never saw these lines. So the fleet
+/// paid two thirds of its log budget for an alert that could not exist.
+///
+/// A gauge of "when did I last see one" is the same signal in one
+/// series, in the store that does alert:
+///
+/// ```text
+/// (time() - oxy_router_last_probe_received_timestamp_seconds) > 300
+/// ```
+///
+/// Same shape, and the same reasoning, as `crud::TASKS_REQUEUED`: a
+/// process-local static read directly by the exporter, because
+/// `oxy-app`'s `/metrics` handler holds no reference to the router the
+/// orchestrator built and `agentic-runtime` must never depend on
+/// `oxy-app`. Exported by `oxy_app::server::worker_metrics`.
+///
+/// The per-receipt line is still emitted, at `debug`, so an interactive
+/// `RUST_LOG=debug` session can still watch individual probes land.
+pub static PROBES_RECEIVED: AtomicU64 = AtomicU64::new(0);
+
+/// UNIX milliseconds of the most recent probe received by any listener
+/// in this process. See [`PROBES_RECEIVED`] for the rationale.
+///
+/// `0` means no probe has been received since this process started.
+/// The exporter renders that as an **absent series** rather than a zero
+/// timestamp, because `time() - 0` is ~57 years and would page every
+/// pod during the one probe interval that `background::start`
+/// deliberately lets elapse before the first emission.
+pub static LAST_PROBE_RECEIVED_MILLIS: AtomicI64 = AtomicI64::new(0);
 
 /// Initial reconnect backoff. Doubles up to [`MAX_RECONNECT_BACKOFF`].
 const INITIAL_RECONNECT_BACKOFF: Duration = Duration::from_millis(200);
@@ -275,7 +328,14 @@ impl PostgresTaskRouter {
     /// probe has been seen since startup.
     ///
     /// External monitoring should alert when this grows stale (default
-    /// production probe interval is 60s; alert at ~3 missed probes).
+    /// production probe interval is 60s; alert at ~3 missed probes) —
+    /// and now can: the same receipt updates the process-wide
+    /// [`LAST_PROBE_RECEIVED_MILLIS`], which the worker's `/metrics`
+    /// endpoint exports as
+    /// `oxy_router_last_probe_received_timestamp_seconds`. This
+    /// accessor stays for in-process callers and tests that hold the
+    /// router; the static is what the exporter reads, because it has no
+    /// handle on this instance.
     pub fn last_probe_received_at(&self) -> Option<SystemTime> {
         let m = self.last_probe_at_millis.load(Ordering::Relaxed);
         if m <= 0 {
@@ -686,13 +746,20 @@ async fn listen_once(
                             .map(|d| d.as_millis() as i64)
                             .unwrap_or(0);
                         driver_probe.store(now_millis, Ordering::Relaxed);
-                        // INFO level (not trace) so this lands in
-                        // typical production logs. Ops alerts on
-                        // *absence* of this event over a window —
-                        // the alert needs the event to be there
-                        // when the system is healthy, hence info
-                        // not trace.
-                        tracing::info!(
+                        // The alertable form of this signal is the
+                        // pair of process-wide statics, exported as
+                        // Prometheus series by the worker's /metrics
+                        // endpoint and alerted on in VictoriaMetrics.
+                        // See PROBES_RECEIVED for why this is a
+                        // metric and no longer an `info` line.
+                        PROBES_RECEIVED.fetch_add(1, Ordering::Relaxed);
+                        LAST_PROBE_RECEIVED_MILLIS.store(now_millis, Ordering::Relaxed);
+                        // DEBUG, not info: one line per receipt is
+                        // O(emitters x listeners) per interval and
+                        // was 67% of prod's oxy log volume. Kept at
+                        // debug so `RUST_LOG=debug` can still watch
+                        // individual probes land during a triage.
+                        tracing::debug!(
                             target: "router.health_probe_received",
                             from = %n.payload(),
                             "health probe received"
