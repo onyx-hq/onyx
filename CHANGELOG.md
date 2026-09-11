@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.145] - 2026-09-11
+
+### 🚀 Features
+
+- Peer cohorts — reach-scoped cohort endpoint over airlayer #116 (#3129)
+- Platform debuggability — spans for queued work, json-only stderr, causes on failed requests (#3155)
+
+### 🐛 Bug Fixes
+
+- Custom-app functions — a ClickHouse INSERT carries its audit trailer in front, not behind (#3158)
+- Custom-app secrets imports WorkspaceAdmin once — main does not compile (#3164)
+
 ## [0.5.144] - 2026-09-10
 
 ### 🚀 Features
@@ -18,10 +30,13 @@ All notable changes to this project will be documented in this file.
 
 - *(deps)* Bump softprops/action-gh-release from 3.0.2 to 3.0.3 (#3143)
 - *(deps)* Bump lewagon/wait-on-check-action from 1.8.1 to 1.9.1 (#3144)
+- *(deps-dev)* Bump the dev-npm-major-dependencies group across 2 directories with 1 update (#3148)
+- *(deps)* Bump the prod-npm-major-dependencies group across 1 directory with 2 updates (#3147)
 
 ### ⚙️ Miscellaneous Tasks
 
 - Local airhouse stack tracks image 0.1.48 (#3139)
+- Release 0.5.144 (#3138)
 
 ## [0.5.143] - 2026-09-09
 

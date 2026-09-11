@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "agentic-airway"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "agentic-core",
  "agentic-runtime",
@@ -228,7 +228,7 @@ dependencies = [
 
 [[package]]
 name = "agentic-analytics"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "agentic-connector",
  "agentic-core",
@@ -266,7 +266,7 @@ dependencies = [
 
 [[package]]
 name = "agentic-automation"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "agentic-connector",
  "agentic-core",
@@ -299,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "agentic-builder"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "agentic-connector",
  "agentic-core",
@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "agentic-connector"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "agentic-core",
  "arrow 58.3.0",
@@ -359,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "agentic-core"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -376,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "agentic-http"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "agentic-pipeline",
  "agentic-runtime",
@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "agentic-llm"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "agentic-core",
  "async-stream",
@@ -485,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "agentic-semantic"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "agentic-connector",
  "agentic-core",
@@ -676,7 +676,7 @@ dependencies = [
 
 [[package]]
 name = "airhouse"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "agentic-connector",
  "agentic-core",
@@ -5501,7 +5501,7 @@ dependencies = [
 
 [[package]]
 name = "entity"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "chrono",
  "indexmap 2.14.0",
@@ -7906,7 +7906,7 @@ dependencies = [
 
 [[package]]
 name = "migration"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "async-std",
  "clap",
@@ -8819,7 +8819,7 @@ dependencies = [
 
 [[package]]
 name = "omni"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "garde",
  "rand 0.10.2",
@@ -9097,7 +9097,7 @@ dependencies = [
 
 [[package]]
 name = "oxy"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "aes-gcm",
  "aho-corasick",
@@ -9242,7 +9242,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-airlayer-compat"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "airlayer",
  "lru 0.18.2",
@@ -9254,7 +9254,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-anthropic"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "async-openai",
  "oxy-shared",
@@ -9268,7 +9268,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-api-github"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "axum",
  "base64 0.23.0",
@@ -9293,7 +9293,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-api-onboarding"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "agentic-pipeline",
  "axum",
@@ -9316,7 +9316,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-api-partner-console"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "axum",
  "chrono",
@@ -9337,7 +9337,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-app"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "agentic-airway",
  "agentic-analytics",
@@ -9497,7 +9497,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-app-core"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "agentic-http",
  "agentic-semantic",
@@ -9529,7 +9529,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-auth"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "anyhow",
  "argon2",
@@ -9556,7 +9556,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-authz"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "tracing",
  "uuid",
@@ -9564,7 +9564,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-billing"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "chrono",
  "entity",
@@ -9584,7 +9584,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-cameras"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "airhouse",
  "anyhow",
@@ -9632,7 +9632,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-compile"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -9658,7 +9658,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-gemini"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "async-openai",
  "oxy-shared",
@@ -9668,7 +9668,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-git"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "async-trait",
  "base64 0.23.0",
@@ -9684,7 +9684,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-llm"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "oxy-anthropic",
  "oxy-gemini",
@@ -9699,7 +9699,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-looker"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "reqwest 0.13.4",
  "serde",
@@ -9713,7 +9713,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-metric-monitoring"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "agentic-analytics",
  "async-trait",
@@ -9738,7 +9738,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-observability"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "async-trait",
  "chrono",
@@ -9755,7 +9755,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-ollama"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "async-openai",
  "oxy-shared",
@@ -9765,7 +9765,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-oltp"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "agentic-connector",
  "async-trait",
@@ -9792,7 +9792,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-openai"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "async-openai",
  "axum",
@@ -9809,7 +9809,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-platform"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "aes-gcm",
  "agentic-runtime",
@@ -9832,7 +9832,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-project"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9860,7 +9860,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-semantic"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "minijinja",
  "oxy-airlayer-compat",
@@ -9876,7 +9876,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-server"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "axum",
  "dotenv",
@@ -9901,7 +9901,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-server-authz"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "axum",
  "chrono",
@@ -9919,7 +9919,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-shared"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -9951,7 +9951,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-simulation"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "chrono",
  "serde",
@@ -9965,7 +9965,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-slack-client"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "oxy-shared",
  "reqwest 0.13.4",
@@ -9978,7 +9978,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-telemetry"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "axum",
  "chrono",
@@ -10001,7 +10001,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-test-utils"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "migration",
  "sea-orm",
@@ -10017,7 +10017,7 @@ dependencies = [
 
 [[package]]
 name = "oxy-unifi"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "reqwest 0.13.4",
  "serde",
@@ -10030,11 +10030,11 @@ dependencies = [
 
 [[package]]
 name = "oxy-web"
-version = "0.5.144"
+version = "0.5.145"
 
 [[package]]
 name = "oxy-workspace-fs"
-version = "0.5.144"
+version = "0.5.145"
 dependencies = [
  "async-trait",
  "oxy-shared",
