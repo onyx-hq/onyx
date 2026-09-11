@@ -11,21 +11,26 @@ import {
 import useWorkspaceReadiness from "./useWorkspaceReadiness";
 
 /**
- * What decides whether Home hands the user their workspace or a full-page setup
- * wizard. The redirect is the most disruptive thing this hook can do, and its
- * inputs are unreliable in opposite directions:
+ * What Home shows about an unfinished workspace. It never redirects into the
+ * setup wizard any more — workspaces are set up by the Oxygen team — so what's
+ * left to pin is which gap rows appear, for whom, and when Home is allowed to
+ * call the IdeOnly credential probe at all. Its inputs are unreliable in
+ * opposite directions:
  *
  *   - the credential probe reads the workspace secret store only, so a key set
  *     via an env var reads as missing on a workspace that works;
  *   - the wizard state is localStorage, so it's absent for a teammate and stale
  *     for anyone who abandoned setup halfway.
- *
- * So the tests below are mostly about NOT redirecting.
  */
 
 const WS_ID = "ws-1";
 
+type User = { is_owner: boolean; is_app_admin: boolean };
+const STAFF: User = { is_owner: false, is_app_admin: true };
+const MEMBER: User = { is_owner: false, is_app_admin: false };
+
 let isLocalMode = false;
+let user: User = STAFF;
 let githubSetup: {
   missing_llm_key_vars: { var_name: string; vendor: string; sample_model_name?: string }[];
   warehouses: { name: string; dialect: string; missing_vars: { var_name: string }[] }[];
@@ -35,6 +40,9 @@ let agents: { path: string; public: boolean; model?: string }[];
 let databases: { name: string }[];
 
 vi.mock("@/contexts/AuthContext", () => ({ useAuth: () => ({ isLocalMode }) }));
+vi.mock("@/hooks/api/users/useCurrentUser", () => ({
+  default: () => ({ data: user, isPending: false })
+}));
 vi.mock("@/hooks/useCurrentProjectBranch", () => ({
   default: () => ({ project: { id: WS_ID, storage_key: WS_ID } })
 }));
@@ -112,6 +120,7 @@ beforeEach(() => {
   probeEnabledCalls.length = 0;
   probeCacheWarm = false;
   isLocalMode = false;
+  user = STAFF;
   setUpWorkspace();
 });
 afterEach(() => vi.clearAllMocks());
@@ -180,14 +189,24 @@ describe("useWorkspaceReadiness — the IdeOnly setup probe", () => {
     expect(hasPendingOnboardingForStorageKey(WS_ID)).toBe(true);
   });
 
-  it("is called in legacy local mode, which has no fleet to protect", () => {
+  it("is called in legacy local mode, which has no fleet to protect and no accounts", () => {
     isLocalMode = true;
+    user = MEMBER;
     renderHook(() => useWorkspaceReadiness());
     expect(probeWasEnabled()).toBe(true);
   });
+
+  it("is not called for a viewer without staff standing, even mid-wizard", () => {
+    // The probe only feeds "Finish setup" rows, which such a viewer never sees.
+    user = MEMBER;
+    seedPendingWizard();
+    markOnboardingDismissedForStorageKey(WS_ID);
+    renderHook(() => useWorkspaceReadiness());
+    expect(probeWasEnabled()).toBe(false);
+  });
 });
 
-describe("useWorkspaceReadiness — when it must not redirect", () => {
+describe("useWorkspaceReadiness — Home, never the wizard", () => {
   it("leaves a set-up workspace on Home", () => {
     const { result } = renderHook(() => useWorkspaceReadiness());
     expect(result.current.status).toBe("ready");
@@ -266,25 +285,62 @@ describe("useWorkspaceReadiness — when it must not redirect", () => {
     const { result } = renderHook(() => useWorkspaceReadiness());
     expect(result.current.status).toBe("ready");
   });
-});
 
-describe("useWorkspaceReadiness — when it still redirects", () => {
-  it("resumes a pending wizard on a workspace that isn't set up yet", () => {
+  it("offers a pending wizard as a row rather than resuming it", () => {
+    // The last redirect Home had: pending wizard state on a workspace that
+    // isn't set up yet. Now the wizard is one click away, not forced.
     seedPendingWizard();
     reportMissingLlmKey();
     const { result } = renderHook(() => useWorkspaceReadiness());
-    expect(result.current).toMatchObject({
-      status: "redirect-onboarding",
-      to: `/acme/workspaces/${WS_ID}/onboarding`
-    });
+    if (result.current.status !== "ready") throw new Error("expected ready");
+    expect(result.current.gaps).toContainEqual(
+      expect.objectContaining({ label: "LLM API key not set", cta: "Finish setup" })
+    );
   });
 
-  it("still starts setup from the credential probe in legacy local mode", () => {
-    // Local mode has no workspace-creation flow to seed wizard state, and its
-    // probe does read env vars — so there, missing really is missing.
+  it("does not start setup from the credential probe in legacy local mode either", () => {
     isLocalMode = true;
     reportMissingLlmKey();
     const { result } = renderHook(() => useWorkspaceReadiness());
-    expect(result.current.status).toBe("redirect-onboarding");
+    if (result.current.status !== "ready") throw new Error("expected ready");
+    expect(result.current.gaps.map((g) => g.label)).toContain("LLM API key not set");
+  });
+});
+
+describe("useWorkspaceReadiness — Finish setup is staff work", () => {
+  it("shows no Finish setup rows to a viewer without staff standing", () => {
+    user = MEMBER;
+    seedPendingWizard();
+    markOnboardingDismissedForStorageKey(WS_ID);
+    reportMissingLlmKey();
+    const { result } = renderHook(() => useWorkspaceReadiness());
+    if (result.current.status !== "ready") throw new Error("expected ready");
+    expect(result.current.gaps.filter((g) => g.cta === "Finish setup")).toEqual([]);
+  });
+
+  it("locks chat for that viewer without offering config steps they can't take", () => {
+    user = MEMBER;
+    databases = [];
+    const { result } = renderHook(() => useWorkspaceReadiness());
+    if (result.current.status !== "ready") throw new Error("expected ready");
+    expect(result.current.gaps).toEqual([]);
+    expect(result.current.shouldDisableChat).toBe(true);
+  });
+
+  it("offers staff the no-database step", () => {
+    user = STAFF;
+    databases = [];
+    const { result } = renderHook(() => useWorkspaceReadiness());
+    if (result.current.status !== "ready") throw new Error("expected ready");
+    expect(result.current.gaps.map((g) => g.label)).toContain("No database connection");
+  });
+
+  it("counts a Global Owner as staff", () => {
+    user = { is_owner: true, is_app_admin: false };
+    markOnboardingDismissedForStorageKey(WS_ID);
+    reportMissingLlmKey();
+    const { result } = renderHook(() => useWorkspaceReadiness());
+    if (result.current.status !== "ready") throw new Error("expected ready");
+    expect(result.current.gaps.map((g) => g.cta)).toContain("Finish setup");
   });
 });

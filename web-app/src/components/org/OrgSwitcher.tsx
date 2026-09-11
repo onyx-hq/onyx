@@ -9,23 +9,28 @@ import {
   DropdownMenuTrigger
 } from "@/components/ui/shadcn/dropdown-menu";
 import { useOrgs } from "@/hooks/api/organizations";
+import useCurrentUser from "@/hooks/api/users/useCurrentUser";
 import { cn } from "@/libs/shadcn/utils";
 import ROUTES from "@/libs/utils/routes";
 import useCurrentOrg from "@/stores/useCurrentOrg";
 
 /**
  * Standalone organization switcher for chrome that isn't the rail — e.g. the
- * onboarding header, where the rail is hidden but a multi-org owner still needs
- * to jump between organizations. Lists the caller's orgs and offers "New
- * organization".
+ * onboarding header, where the rail is hidden but a multi-org user still needs
+ * to jump between organizations. Lists the caller's orgs; staff who may create
+ * orgs also get "New organization", which opens the admin tenant directory
+ * (orgs are provisioned there, not self-served).
  *
  * Renders nothing when the caller belongs to no org yet: there's nothing to
- * switch between, and creating the first org is the page's main job elsewhere.
+ * switch between.
  */
 export default function OrgSwitcher() {
   const navigate = useNavigate();
   const currentOrg = useCurrentOrg((s) => s.org);
   const { data: orgs } = useOrgs();
+  const { data: user } = useCurrentUser();
+  // The server's display flag for `Cap::CreateOrgs` — what `POST /admin/orgs` requires.
+  const canCreateOrgs = !!user?.platform_capabilities?.includes("create_orgs");
 
   if (!orgs || orgs.length === 0) return null;
 
@@ -70,17 +75,21 @@ export default function OrgSwitcher() {
             {org.id === active?.id && <Check className='size-4 text-primary' />}
           </DropdownMenuItem>
         ))}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          className='cursor-pointer'
-          onSelect={(e) => {
-            e.preventDefault();
-            navigate(ROUTES.ONBOARDING);
-          }}
-        >
-          <Plus className='size-4' />
-          New organization
-        </DropdownMenuItem>
+        {canCreateOrgs && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className='cursor-pointer'
+              onSelect={(e) => {
+                e.preventDefault();
+                navigate(`${ROUTES.ADMIN.TENANTS}?type=orgs`);
+              }}
+            >
+              <Plus className='size-4' />
+              New organization
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

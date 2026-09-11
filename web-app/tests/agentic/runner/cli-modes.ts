@@ -184,15 +184,6 @@ function loadSurfaces(surfacesPath: string): SurfaceEntry[] {
       surface: "builder",
       paths: ["src/components/BuilderDialog/"],
       flows: ["builder-edits-app"]
-    },
-    {
-      surface: "onboarding",
-      paths: [
-        "src/pages/onboarding/",
-        "src/components/workspaces/components/CreateWorkspaceDialog/components/AgenticSetup",
-        "src/components/workspaces/components/WorkspaceCreator"
-      ],
-      flows: ["onboarding-blank-workspace"]
     }
   ];
 }

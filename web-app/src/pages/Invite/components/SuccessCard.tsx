@@ -18,8 +18,8 @@ export function SuccessCard({ onDone }: { onDone: () => void }) {
   useEffect(() => {
     if (countdown <= 0) {
       // Defer workspace selection to <PostLoginDispatcher>: it'll send the
-      // user to the last-opened / first workspace, or to /:slug/onboarding
-      // if the joined org has no workspaces yet.
+      // user to the last-opened / first workspace, or to the org root's
+      // "being set up" screen if the joined org has no workspace ready yet.
       onDone();
       return;
     }

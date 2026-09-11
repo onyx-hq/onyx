@@ -62,7 +62,6 @@ import InvitePage from "./pages/Invite";
 import LoginPage from "./pages/login";
 import OrgDispatcher from "./pages/OrgDispatcher";
 import OnboardingPage from "./pages/onboarding";
-import OrgOnboardingPage from "./pages/onboarding/OrgOnboardingPage";
 import PostLoginDispatcher from "./pages/PostLoginDispatcher";
 import QuickBooksConnected from "./pages/quickbooks/QuickBooksConnected";
 import useAskDock from "./stores/useAskDock";
@@ -663,15 +662,13 @@ const getCloudRouter = (authConfig: AuthConfigResponse) =>
 
           {/* User-facing routes — owners get bounced to the admin queue. */}
           <Route element={<OwnerRedirect />}>
-            {/* Top-level: smart dispatcher picks onboarding / last workspace / first workspace */}
+            {/* Top-level: smart dispatcher picks no-org page / org root / last or first workspace */}
             <Route index element={<PostLoginDispatcher />} />
+            {/* No org yet: pending invites, join by link, log out */}
             <Route path='onboarding' element={<OnboardingPage />} />
 
             {/* Org-scoped routes */}
             <Route path=':orgSlug' element={<OrgGuard />}>
-              {/* Org onboarding (first workspace + optional invites) — no sidebar */}
-              <Route path='onboarding' element={<OrgOnboardingPage />} />
-
               {/* Stripe Checkout return URLs. The path includes `/billing/`,
                   which is the `OrgGuard` paywall bypass — these pages
                   render even while billing.status is `incomplete`. */}
@@ -692,8 +689,10 @@ const getCloudRouter = (authConfig: AuthConfigResponse) =>
                 }
               />
 
-              {/* Org root picks a workspace and redirects into it */}
+              {/* Org root picks a workspace and redirects into it, or shows "being set up" */}
               <Route index element={<OrgDispatcher />} />
+              {/* The org onboarding wizard is gone; old links land on the org root. */}
+              <Route path='onboarding' element={<Navigate to='..' replace />} />
 
               {/* Workspace-scoped routes */}
               <Route

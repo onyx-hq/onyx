@@ -27,6 +27,7 @@ use oxy::database::client::establish_connection;
 use oxy::database::filters::UserQueryFilterExt;
 use oxy_app_core::pagination::{self, Paged, trim_overfetch};
 use oxy_auth::extractor::AuthenticatedUserExtractor;
+use oxy_shared::fleet_role::{RouteRole, RouteRoleDecl};
 use sea_orm::{
     ActiveModelTrait, ActiveValue, ColumnTrait, DatabaseBackend, EntityTrait, FromQueryResult,
     PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set, Statement, TransactionTrait,
@@ -36,6 +37,7 @@ use uuid::Uuid;
 
 use crate::server::api::admin::scope;
 use crate::server::router::AppState;
+use crate::server::service::workspace_provisioning::{StagedWorkspace, create_default_workspace};
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -54,6 +56,15 @@ pub(crate) fn router() -> Router<AppState> {
             post(transfer_ownership),
         )
 }
+
+/// `POST /admin/orgs` creates the org's `Default` workspace — a working copy on
+/// node-local disk — so it must reach the ide. Everything else in [`router`] is
+/// Postgres and takes the console's FleetOk wildcard (`admin::router_roles`).
+pub(crate) const CREATE_ORG_ROLE: RouteRoleDecl = RouteRoleDecl {
+    method: "POST",
+    path: "/orgs",
+    role: RouteRole::IdeOnly,
+};
 
 // Create org + onboard owner  (POST /admin/orgs)
 
@@ -75,6 +86,8 @@ pub struct AdminCreateOrgResponse {
     pub owner_status: String,
     /// Echo of the (normalized) owner email so the UI can phrase the toast.
     pub owner_email: String,
+    /// The Ready blank `Default` workspace every new org is created with.
+    pub default_workspace_id: Uuid,
 }
 
 /// The two ways to onboard an owner. Kept as a pure decision so the seed-vs-invite
@@ -100,7 +113,9 @@ fn plan_owner_seeding(existing_user_id: Option<Uuid>, email: &str) -> OwnerSeed 
 ///
 /// If `owner_email` is a known user they are seeded as `Owner`; otherwise an
 /// `Owner`-role invitation is created and emailed (7-day expiry). The org is
-/// created billing-`Incomplete` (admin provisions the subscription separately).
+/// created billing-`Incomplete` (admin provisions the subscription separately),
+/// and with a Ready blank `Default` workspace in the same transaction. That
+/// scaffolds a working copy, so the route is IdeOnly — see `admin::router_roles`.
 ///
 /// Requires [`Action::PlatformOrgCreate`] (`Cap::CreateOrgs`), not merely the router's
 /// broader `PlatformOrgs` gate: creating a tenant and being able to administer one are
@@ -266,7 +281,11 @@ pub async fn create_org(
         }
     };
 
-    tx.commit().await.map_err(internal)?;
+    // Every org starts with a Ready blank workspace, so the owner's first sign-in
+    // lands on Home rather than a workspace wizard. Its row joins this
+    // transaction: a workspace that cannot be made rolls the org back with it.
+    let workspace = default_workspace(&tx, org_id, actor.id).await?;
+    let default_workspace_id = workspace.commit(tx).await.map_err(internal)?;
 
     // Post-commit: email the Owner invitation in the background (the row +
     // token are already the source of truth, so a send failure never fails
@@ -313,7 +332,7 @@ pub async fn create_org(
             created_at: org.created_at.to_rfc3339(),
             // A fresh org has one member iff we seeded an existing owner.
             member_count: if seeded { 1 } else { 0 },
-            workspace_count: 0,
+            workspace_count: 1,
             // `owner_email` on the meta row reflects the Owner *member*; an
             // invited (not-yet-accepted) owner isn't a member yet.
             owner_email: seeded.then(|| owner_email.clone()),
@@ -322,7 +341,28 @@ pub async fn create_org(
         },
         owner_status: owner_status.to_string(),
         owner_email,
+        default_workspace_id,
     }))
+}
+
+/// Stage the new org's `Default` workspace inside the org's transaction. Any
+/// failure is a 500 — never the 409 a name clash would map to, which the client
+/// reads as "slug taken" — and the transaction is dropped, rolling the org back.
+async fn default_workspace(
+    tx: &sea_orm::DatabaseTransaction,
+    org_id: Uuid,
+    actor_id: Uuid,
+) -> Result<StagedWorkspace, StatusCode> {
+    create_default_workspace(tx, org_id, actor_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                %org_id,
+                error = %e,
+                "admin create_org: default workspace could not be created; org rolled back"
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
 }
 
 /// Map an org-insert DbErr to a status: slug collisions caught at the DB UNIQUE

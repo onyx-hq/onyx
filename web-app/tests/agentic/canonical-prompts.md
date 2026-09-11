@@ -11,7 +11,7 @@ default scope is `flow` (private to that flow file/case/step index).
 
 ## How to use
 
-1. Find the snippet for the surface you need (e.g. cloud-mode prelude).
+1. Find the snippet for the surface you need (e.g. the chat panel).
 2. Copy the YAML block **verbatim** into your flow's `steps:` list.
 3. Do not edit the prompt text — even whitespace/punctuation changes
    make the cache key diverge.
@@ -21,105 +21,11 @@ default scope is `flow` (private to that flow file/case/step index).
 
 > **Naming convention.** All testid selectors used here follow the
 > `[<feature>-<element>]` pattern, mirroring the source attributes
-> (e.g. `onboarding-create-org-button`, `builder-input-textarea`).
+> (e.g. `chat-panel-submit-button`, `builder-input-textarea`).
 > If a snippet here references a testid that no longer resolves, the
 > recording will Tier-1-heal on its first replay (re-ranking the
 > remaining fallback strategies silently) and the failure will
 > surface in the markdown summary's drift section.
-
----
-
-## Onboarding (cloud mode prelude)
-
-These steps assume `oxy serve` is running with cloud auth disabled (port
-3001) and zero pre-existing orgs. Together they take a fresh user from
-`/` to a workspace ready to receive the first interaction.
-
-### Open the welcome page
-
-```yaml
-- wait_for: "selector:text=Welcome to Oxygen"
-```
-
-### Click "Create organization" on the welcome screen
-
-```yaml
-- act: |
-    On the "Welcome to Oxygen" page, click the card with
-    [data-testid=onboarding-create-org-card] (the leftmost option labeled
-    "Create organization"). A dialog with [data-testid=onboarding-create-org-dialog]
-    opens.
-  cache_scope: shared
-```
-
-### Fill the create-org dialog and submit
-
-```yaml
-- act: |
-    Fill in the org dialog and submit:
-    1. browser_click [data-testid=onboarding-org-name-input], then browser_type
-       text "Sample Test Org".
-    2. The slug field [data-testid=onboarding-org-slug-input] auto-populates;
-       leave it untouched.
-    3. browser_click [data-testid=onboarding-create-org-submit].
-    The dialog closes and the URL changes to /<slug>/onboarding?step=invite.
-  cache_scope: shared
-```
-
-### Skip the invite step
-
-```yaml
-- wait_for: "selector:text=Invite your team"
-
-- act: |
-    On the invite step, click [data-testid=onboarding-skip-invite-button]
-    to bypass invitations. The page advances to the workspace step.
-  cache_scope: shared
-```
-
-### Pick "Demo Workspace"
-
-```yaml
-- wait_for: "selector:text=Create your first workspace"
-
-- act: |
-    Click [data-testid=onboarding-demo-workspace-card]. The card flips
-    into a "Setting up workspace…" loading state and auto-redirects to
-    /<slug>/workspaces/<uuid>/onboarding once ready (3–10 seconds).
-  cache_scope: shared
-```
-
-### Pick "Blank Workspace"
-
-```yaml
-- wait_for: "selector:text=Create your first workspace"
-
-- act: |
-    Click [data-testid=onboarding-blank-workspace-card]. The form swaps
-    to a workspace-name prompt.
-  cache_scope: shared
-
-- act: |
-    Leave [data-testid=onboarding-workspace-name-input] empty (default
-    name) and click [data-testid=onboarding-create-workspace-button].
-    The page enters the "Setting up workspace…" loading state and
-    auto-redirects to /<slug>/workspaces/<uuid>/onboarding once ready.
-  cache_scope: shared
-```
-
-### Provide the Anthropic key
-
-```yaml
-- act: |
-    The onboarding thread asks for the Anthropic API key in
-    [data-testid=onboarding-secure-input] (password-style).
-    1. browser_click that input, then browser_type text=${ANTHROPIC_API_KEY}.
-    2. browser_click [data-testid=onboarding-secure-input-submit].
-    The thread advances and the page eventually shows "Workspace ready".
-  cache_scope: shared
-
-- wait_for: "selector:text=Workspace ready;timeout_ms=180000"
-```
 
 ---
 

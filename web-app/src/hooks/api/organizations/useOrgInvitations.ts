@@ -21,22 +21,6 @@ export const useCreateInvitation = () => {
   });
 };
 
-export const useCreateBulkInvitations = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      orgId,
-      invitations
-    }: {
-      orgId: string;
-      invitations: Array<{ email: string; role: string }>;
-    }) => OrganizationService.createBulkInvitations(orgId, invitations),
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.org.invitations(variables.orgId) });
-    }
-  });
-};
-
 export const useRevokeInvitation = () => {
   const queryClient = useQueryClient();
   return useMutation({

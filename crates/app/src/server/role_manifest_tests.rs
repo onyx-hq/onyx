@@ -567,13 +567,34 @@ fn org_subdomain_routes_are_fleet_ok() {
             "{method} admin org-subdomain must be FleetOk (Postgres-only)"
         );
     }
-    // Create org + onboard owner is a pure Postgres write (org + billing +
-    // owner membership/invitation) — no workspace FS, so it stays FleetOk.
+}
+
+#[test]
+fn admin_create_org_reaches_the_ide_and_the_rest_of_the_console_does_not() {
+    // Creating an org scaffolds its Default workspace — a working copy on
+    // node-local disk — so a stateless replica must not answer it.
     assert_eq!(
         classify("POST", "/api/admin/orgs"),
-        RouteRole::FleetOk,
-        "POST admin create-org must be FleetOk (Postgres-only)"
+        RouteRole::IdeOnly,
+        "POST admin create-org writes the new org's Default workspace working copy"
     );
+    // The carve-out names its verb and its path: the billing list on the same
+    // path, and the rest of the orgs console, stay on the fleet.
+    let id = "d9830be4-c6a4";
+    for (method, path) in [
+        ("GET", "/api/admin/orgs".to_string()),
+        ("GET", "/api/admin/orgs-meta".to_string()),
+        ("GET", format!("/api/admin/orgs/{id}/detail")),
+        ("PATCH", format!("/api/admin/orgs/{id}")),
+        ("DELETE", format!("/api/admin/orgs/{id}")),
+        ("GET", "/api/admin/feature-flags".to_string()),
+    ] {
+        assert_eq!(
+            classify(method, &path),
+            RouteRole::FleetOk,
+            "{method} {path} is Postgres-only and must stay FleetOk"
+        );
+    }
 }
 
 #[test]

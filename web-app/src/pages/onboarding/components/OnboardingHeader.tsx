@@ -18,9 +18,9 @@ export default function OnboardingHeader() {
   const previousOrgSlug = useCurrentOrg((s) => s.org?.slug);
   const hasAnyWorkspace = !!orgs?.some((o) => (o.workspace_count ?? 0) > 0);
 
-  // Prefer the org the user was on before entering the new-org flow so "Back"
-  // returns them there. Falls back to root, which lets PostLoginDispatcher
-  // pick a workspace when no previous org is tracked.
+  // Prefer the org the user was on before landing here so "Back" returns them
+  // there. Falls back to root, which lets PostLoginDispatcher pick a workspace
+  // when no previous org is tracked.
   const handleBack = () => {
     if (previousOrgSlug) {
       navigate(ROUTES.ORG(previousOrgSlug).ROOT);
@@ -48,9 +48,9 @@ export default function OnboardingHeader() {
         </div>
       )}
       <div className='flex items-center gap-4'>
-        {/* A multi-org owner can jump to an existing org mid-onboarding — the
-            rail (and its switcher) is hidden here, so it lives in the header.
-            Renders nothing when the user has no org yet. */}
+        {/* The rail (and its switcher) is hidden here, so a user who does
+            belong to an org can jump to it from the header. Renders nothing
+            when the user has no org yet. */}
         <OrgSwitcher />
         {currentUser?.email && (
           <div className='group relative'>

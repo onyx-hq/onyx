@@ -19,7 +19,7 @@ fixes are very different and applying the wrong one can hide a real bug
 or pay needless re-record cost.
 
 `$ARGUMENTS` is the flow stem (e.g. `chat-ask`, `builder-edits-app`) or
-a CI bucket name (`builder`, `ask-agent`, `threads`, `ide`, `onboarding`).
+a CI bucket name (`builder`, `semantic`, `ask-agent`, `threads`, `ide`, `metric-tree`).
 
 This command must be run from the root of an `oxy-hq/oxygen-internal`
 checkout.

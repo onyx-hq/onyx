@@ -136,7 +136,7 @@ export async function ensureBackend(opts: BackendOptions): Promise<BackendHandle
   );
   if (opts.mode === "cloud") {
     console.log(
-      "[backend] cloud mode: --clean wipes the local oxy postgres volume so the org-creation step doesn't 409"
+      "[backend] cloud mode: --clean wipes the local oxy postgres volume — start + `oxy seed` a backend yourself if the flow needs data"
     );
   }
   mkdirSync(LOG_DIR, { recursive: true });
@@ -181,10 +181,12 @@ export async function ensureBackend(opts: BackendOptions): Promise<BackendHandle
 
 function spawnArgs(mode: BackendMode): string[] {
   if (mode === "cloud") {
-    // No `--local`. `--clean` ensures Postgres comes up with no orgs so the
-    // flow's create-org step doesn't 409 on a rerun. Cloud-mode flows drive
-    // the auth-disabled internal port (3001), which `oxy start` exposes by
-    // default; the public 3000 port has magic-link auth that the test
+    // No `--local`. `--clean` gives every run the same empty Postgres: no
+    // org exists and no UI path creates one (orgs are staff/partner-made), so
+    // a flow that needs org data runs against a backend started and
+    // `oxy seed`ed beforehand, which ensureBackend reuses. Cloud-mode flows
+    // drive the auth-disabled internal port (3001), which `oxy start` exposes
+    // by default; the public 3000 port has magic-link auth that the test
     // runner can't drive.
     return ["start", "--enterprise", "--clean"];
   }

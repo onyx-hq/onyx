@@ -29,10 +29,10 @@ use super::role_router::RoleRouter;
 pub(super) fn build_global_routes(app_state: &AppState) -> RoleRouter {
     RoleRouter::new(app_state.clone())
         .route_fleet("/logout", get(user::logout))
-        .route_fleet(
-            "/orgs",
-            post(organizations::create_org).get(organizations::list_orgs),
-        )
+        // Read-only. Customers do not create orgs: Oxy staff (`POST
+        // /admin/orgs`) and partners (`POST /partners/{id}/orgs`) onboard them,
+        // each org arriving with a Ready Default workspace.
+        .route_fleet("/orgs", get(organizations::list_orgs))
         .route_fleet(
             "/apps/mine",
             get(crate::server::api::admin::apps::handlers::list_my_apps),
@@ -73,7 +73,10 @@ pub(super) fn build_global_routes(app_state: &AppState) -> RoleRouter {
         //
         // Authorization is the query filter — you see what you are assigned,
         // supervise, or hold the addressed role for. See the module docs.
-        .route_fleet("/work", get(work::handlers::list).post(work::handlers::create))
+        .route_fleet(
+            "/work",
+            get(work::handlers::list).post(work::handlers::create),
+        )
         .route_fleet("/work/{id}", axum::routing::patch(work::handlers::update))
         // Notifications. Self-scoped — the filter `user_id = me` IS the
         // authorization, and there is no org gate on purpose: a frontline
@@ -135,13 +138,16 @@ pub(super) fn build_global_routes(app_state: &AppState) -> RoleRouter {
         // workspaces management, and internal jobs. The sensitive subset —
         // billing operations and the `app_admins` table itself — escalates
         // to strict OXY_OWNER via `route_layer` inside `admin::router()`.
-        .nest_all(
+        //
+        // Declared rather than `nest_all`: the console is FleetOk wholesale
+        // except creating an org, which scaffolds its Default workspace onto
+        // node-local disk. `admin::router_roles` states both.
+        .nest_declared(
             "/admin",
-            RouteRole::FleetOk,
             admin::router().layer(middleware::from_fn(
                 oxy_owner_or_app_admin_guard::oxy_owner_or_app_admin_guard_middleware,
             )),
-            "admin CRUD is Postgres; the one FS read under it (reconcile.yml) runs on the worker, not the request path",
+            admin::router_roles(),
         )
         // Internal Jobs is mounted as a sibling nest because its routes
         // were flattened (no `/internal-jobs/` prefix on each route). The

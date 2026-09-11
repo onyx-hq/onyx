@@ -15,8 +15,8 @@ const DEFAULT_SETTINGS: FlowSettings = {
   trace: "on-failure",
   cache_actions: true,
   max_steps: 30,
-  // Default to single-workspace mode. Flows that drive the cloud-mode
-  // onboarding (org → workspace) opt in via `backend_mode: cloud`.
+  // Default to single-workspace mode. Flows that need the multi-tenant
+  // (org → workspace) shape opt in via `backend_mode: cloud`.
   backend_mode: "local"
 };
 

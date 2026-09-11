@@ -42,10 +42,11 @@
 #                                           # at examples/, workspace_id
 #                                           # 70787bb2-e11b-5488-b2c3-02e60d5fc7d3
 #                                           # (both fixed by `oxy seed`'s own
-#                                           # source, not chosen by this flow)
-#   cargo run -p oxy-server -- compile --workspace-path "$PWD/examples" \
-#     --workspace-id 70787bb2-e11b-5488-b2c3-02e60d5fc7d3 --enterprise --promote
+#                                           # source, not chosen by this flow),
+#                                           # and compiles + promotes it
 #   OXY_OWNER=<...>,<caller-email> cargo run -p oxy-server -- serve --enterprise
+#
+# `scripts/verify-all.sh` phase 4 automates this (start, then `oxy seed`).
 #
 # The org slug ("local") and workspace id above are `oxy seed`'s own fixed
 # constants, so the goto: path below is reproducible by anyone who runs that

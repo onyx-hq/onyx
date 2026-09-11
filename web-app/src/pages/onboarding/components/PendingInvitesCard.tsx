@@ -17,17 +17,11 @@ import queryKeys from "@/hooks/api/queryKey";
 import ROUTES from "@/libs/utils/routes";
 import type { MyInvitation } from "@/types/organization";
 
-/** "You've been invited" screen shown when a user with zero orgs lands on
+/** "You've been invited" card shown when a user with zero orgs lands on
  *  /onboarding and the backend reports pending invitations addressed to their
- *  email. Accepting primes the org store and drops the user at ROOT, where the
- *  PostLoginDispatcher then routes them straight into a workspace. */
-export default function PendingInvitesCard({
-  invites,
-  onCreateInstead
-}: {
-  invites: MyInvitation[];
-  onCreateInstead: () => void;
-}) {
+ *  email. Accepting refreshes the orgs list and drops the user at the org
+ *  root, which routes them into a workspace (or "being set up"). */
+export default function PendingInvitesCard({ invites }: { invites: MyInvitation[] }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const acceptInvitation = useAcceptInvitation();
@@ -89,6 +83,7 @@ export default function PendingInvitesCard({
                   size='sm'
                   onClick={() => handleAccept(invite)}
                   disabled={acceptingToken !== null}
+                  data-testid={`onboarding-accept-invite-${invite.org_slug}`}
                 >
                   {acceptingToken === invite.token ? (
                     <Loader2 className='size-3.5 animate-spin' />
@@ -100,21 +95,6 @@ export default function PendingInvitesCard({
             </li>
           ))}
         </ul>
-
-        <div className='flex items-center gap-3 pt-2'>
-          <div className='h-px flex-1 bg-border' />
-          <span className='text-muted-foreground text-xs'>or</span>
-          <div className='h-px flex-1 bg-border' />
-        </div>
-
-        <Button
-          variant='outline'
-          onClick={onCreateInstead}
-          disabled={acceptingToken !== null}
-          className='w-full'
-        >
-          Create my own organization
-        </Button>
       </CardContent>
     </Card>
   );

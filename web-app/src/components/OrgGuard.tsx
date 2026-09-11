@@ -110,8 +110,7 @@ export default function OrgGuard() {
   // Hold the spinner until billing status arrives. Without this, child
   // routes mount briefly while `useOrgBillingStatus` is pending and fire
   // requests that hit `SubscriptionGuard` → 402 before `PaywallScreen`
-  // mounts. Most visible after `POST /orgs` lands the user on
-  // `/{slug}/onboarding` with the new (Incomplete) org.
+  // mounts. Most visible on a freshly provisioned (Incomplete) org.
   if (billingActive && !onBillingPath && !billing && billingPending) {
     return (
       <div className='flex h-full w-full items-center justify-center'>

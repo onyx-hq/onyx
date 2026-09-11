@@ -5,6 +5,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import useAgents from "@/hooks/api/agents/useAgents";
 import useDatabases from "@/hooks/api/databases/useDatabases";
 import useGithubSetup from "@/hooks/api/onboarding/useGithubSetup";
+import useCurrentUser from "@/hooks/api/users/useCurrentUser";
 import useCurrentProjectBranch from "@/hooks/useCurrentProjectBranch";
 import {
   clearOnboardingDismissedForStorageKey,
@@ -25,24 +26,25 @@ export interface SetupGap {
 
 export type WorkspaceReadiness =
   | { status: "loading" }
-  | { status: "redirect-onboarding"; to: string }
   | { status: "ready"; gaps: SetupGap[]; shouldDisableChat: boolean };
 
 /**
- * The old chat-home's gating logic, extracted: workspace match, setup
- * gaps (per-agent LLM key resolution, warehouse creds, no-db/no-agent),
- * and the pending-wizard redirect. Originally copied verbatim from
- * pages/home — see git history of pages/home/index.tsx for the original
- * inline comments and rationale.
+ * The old chat-home's gating logic, extracted: workspace match and setup gaps
+ * (per-agent LLM key resolution, warehouse creds, no-db/no-agent). Originally
+ * copied verbatim from pages/home — see git history of pages/home/index.tsx
+ * for the original inline comments and rationale.
  *
- * The redirect since narrowed to "a wizard is actually pending on a workspace
- * that isn't usable yet". Missing credentials alone report as gap rows; see
- * the comment at the redirect for why the probe can't be trusted to mean the
- * user never onboarded — and the comment at `needsSetupProbe` for why Home
- * doesn't even make that call on the common path.
+ * Home never redirects into the setup wizard. It used to — first on any
+ * missing credential, later only on pending wizard state — and every version
+ * dragged someone who just wanted their apps into a setup flow they didn't
+ * own. Workspaces are set up by the Oxygen team now, so the credential gaps
+ * are "Finish setup" rows shown only to staff (see `canFinishSetup`); the
+ * comment at `needsSetupProbe` explains why Home doesn't even make that call
+ * on the common path.
  */
 export default function useWorkspaceReadiness(): WorkspaceReadiness {
   const { isLocalMode } = useAuth();
+  const { data: user, isPending: userPending } = useCurrentUser();
   const { project } = useCurrentProjectBranch();
   const orgSlug = useCurrentOrg((s) => s.org?.slug) ?? "";
   const navigate = useNavigate();
@@ -62,6 +64,11 @@ export default function useWorkspaceReadiness(): WorkspaceReadiness {
   const hasPendingWizardState = hasPendingOnboardingForStorageKey(projectStorageKey);
   const onboardingDismissed = isOnboardingDismissedForStorageKey(projectStorageKey);
 
+  // "Finish setup" opens the setup wizard, which is staff work: platform
+  // standing is the server's display flag for that. Legacy local mode has no
+  // accounts at all — whoever runs it is the operator.
+  const canFinishSetup = isLocalMode || !!(user?.is_owner || user?.is_app_admin);
+
   // `onboarding/github-setup` reads config.yml off the working copy, so the
   // manifest pins the whole `/{workspace_id}/onboarding/*` subtree to IdeOnly
   // (`role_manifest.rs`) — and unlike `/details` and `/status` it is NOT in
@@ -74,9 +81,12 @@ export default function useWorkspaceReadiness(): WorkspaceReadiness {
   //
   // So Home only probes when THIS browser is tracking a setup for THIS
   // workspace (mid-wizard, or deferred via "Skip for now"), plus legacy local
-  // mode where there's no fleet and the probe is the only entry into setup.
-  // Everyone else gets Home from the FleetOk `/agents` + `/databases` reads.
-  const needsSetupProbe = wsMatch && (hasPendingWizardState || onboardingDismissed || isLocalMode);
+  // mode where there's no fleet and the probe is the only entry into setup —
+  // and only for a viewer who can act on the answer: the probe feeds nothing
+  // but the "Finish setup" rows (and retiring a stale dismissal). Everyone
+  // else gets Home from the FleetOk `/agents` + `/databases` reads.
+  const needsSetupProbe =
+    wsMatch && canFinishSetup && (hasPendingWizardState || onboardingDismissed || isLocalMode);
 
   // In cloud mode `github_setup` checks only DB secrets, so a key set via an
   // env var on the server is still reported missing — intentional, to prompt
@@ -153,39 +163,27 @@ export default function useWorkspaceReadiness(): WorkspaceReadiness {
   const hasPublicAgents = agents.filter((a) => a.public).length > 0;
   const hasWarehouseCredentials = warehousesNeedingCreds.length === 0;
 
-  // We don't redirect on `!hasDatabases` / `!hasPublicAgents` because those
-  // gaps aren't fixable in the wizard — they need config.yml edits, so the
-  // toast below points the user at the IDE / Settings instead.
-  //
   // With the probe off there is no credential verdict at all — both halves read
   // false off the undefined `setup`. That's the intended reading: no evidence of
   // a gap, rather than a gap assumed from a call we never made. The cost is
   // stated plainly in `shouldDisableChat` below.
-  const hasMissingCredentials = !anyApiError && (llmKeyMissingForAgent || !hasWarehouseCredentials);
-
-  // A missing credential is NOT on its own a reason to hijack Home into the
-  // full-page wizard. The probe reads the workspace secret store only, so a key
-  // supplied by an env var reads as missing on a workspace that works fine —
-  // and localStorage is per-browser, so anyone who didn't run the wizard
-  // themselves (a teammate, a second device) looked "un-onboarded" forever.
-  // Both cases dragged a working workspace into setup on every visit. The gaps
-  // now surface as rows below instead, with the wizard one click away.
   //
-  // Legacy local mode is the exception: it has no workspace-creation flow to
-  // seed wizard state, so the credential probe is its only entry into setup —
-  // and there the probe also reads env vars, so "missing" really is missing.
-  const shouldOfferWizard = hasPendingWizardState || (isLocalMode && hasMissingCredentials);
-
-  // …and even seeded state doesn't bounce a workspace that can already answer
-  // questions — abandoned wizard state used to trap the user in a loop (Home
-  // sends them to the wizard, the wizard is "in flight" so it won't send them
-  // back).
+  // Even with a verdict, a missing credential is never a reason to hijack Home
+  // into the full-page wizard: the probe reads the workspace secret store only,
+  // so a key supplied by an env var reads as missing on a workspace that works.
+  const hasMissingCredentials = !anyApiError && (llmKeyMissingForAgent || !hasWarehouseCredentials);
   const isWorkspaceReady = hasDatabases && hasPublicAgents && !hasMissingCredentials;
 
   // A disabled query sits at `isPending` forever, so only wait on the setup
   // probe when we actually asked for it — otherwise Home spins indefinitely.
+  // The user decides whether we ask, so wait for it first rather than flip the
+  // probe on a render later.
   const isLoading =
-    !wsMatch || (needsSetupProbe && setupPending) || agentsPending || databasesPending;
+    !wsMatch ||
+    userPending ||
+    (needsSetupProbe && setupPending) ||
+    agentsPending ||
+    databasesPending;
 
   // Retire the deferral once there is demonstrably nothing left to defer.
   // `CompletionCard` sets it on every successful completion, not only on "Skip
@@ -204,18 +202,9 @@ export default function useWorkspaceReadiness(): WorkspaceReadiness {
     return { status: "loading" };
   }
 
-  const routes = ROUTES.ORG(orgSlug).WORKSPACE(project.id);
-
-  // Absolute path: `home` and `onboarding` are siblings in WorkspaceLayout,
+  // Absolute paths: `home` and `onboarding` are siblings in WorkspaceLayout,
   // so relative `to='onboarding'` resolves to `/home/onboarding` (404).
-  //
-  // Don't force the wizard when (a) an endpoint is down — we can't trust the
-  // setup state, e.g. github-setup 502s while the IDE is unreachable, and the
-  // wizard would just error too; or (b) the user explicitly deferred setup via
-  // "Skip for now". In both cases the gaps still surface as rows below.
-  if (!anyApiError && !onboardingDismissed && shouldOfferWizard && !isWorkspaceReady) {
-    return { status: "redirect-onboarding", to: routes.ONBOARDING };
-  }
+  const routes = ROUTES.ORG(orgSlug).WORKSPACE(project.id);
 
   const isSetupComplete = hasDatabases && hasPublicAgents;
   // On API error we don't render any gap rows (we can't trust the data), so
@@ -237,8 +226,10 @@ export default function useWorkspaceReadiness(): WorkspaceReadiness {
   if (!anyApiError) {
     // Credential gaps: the wizard collects exactly these secrets, so the CTA
     // opens it rather than pushing the user into Settings to guess which
-    // `*_var` the config references. Offered, not forced — that's the point.
-    if (llmKeyMissingForAgent) {
+    // `*_var` the config references. Offered, not forced — and only to staff,
+    // whose job workspace setup is (the probe is already off for anyone else;
+    // the gate is restated here so the rows can't outlive a probe change).
+    if (canFinishSetup && llmKeyMissingForAgent) {
       gaps.push({
         icon: KeyRound,
         label: "LLM API key not set",
@@ -246,7 +237,7 @@ export default function useWorkspaceReadiness(): WorkspaceReadiness {
         cta: "Finish setup"
       });
     }
-    if (warehousesNeedingCreds.length > 0) {
+    if (canFinishSetup && warehousesNeedingCreds.length > 0) {
       gaps.push({
         icon: KeyRound,
         label:
@@ -257,8 +248,9 @@ export default function useWorkspaceReadiness(): WorkspaceReadiness {
         cta: "Finish setup"
       });
     }
-    // Gaps the wizard can't fix — they need config.yml edits.
-    if (!hasDatabases) {
+    // Gaps the wizard can't fix — they need config.yml edits, so they are staff
+    // work too. Everyone else learns why chat is locked from the composer.
+    if (canFinishSetup && !hasDatabases) {
       gaps.push({
         icon: Database,
         label: "No database connection",
@@ -266,7 +258,7 @@ export default function useWorkspaceReadiness(): WorkspaceReadiness {
         cta: "Configure"
       });
     }
-    if (!hasPublicAgents) {
+    if (canFinishSetup && !hasPublicAgents) {
       gaps.push({
         icon: GitFork,
         label: "No agents configured",

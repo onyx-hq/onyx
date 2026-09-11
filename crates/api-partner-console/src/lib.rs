@@ -22,6 +22,7 @@ mod orgs;
 mod partner_context;
 mod people;
 mod publish_tokens;
+mod route_roles;
 mod workspaces;
 mod write;
 
@@ -44,16 +45,18 @@ use oxy_app_core::audit::events_for_partner;
 use oxy_app_core::pagination::{self, Paged, trim_overfetch};
 use oxy_server_authz::partner_authz::{PartnerCapability, PartnerScope, scopes_for_user};
 
+pub use route_roles::route_roles;
+
 /// The whole `/api/partners` surface: the top-level list route plus the
 /// partner-scoped subtree (wrapped in `partner_middleware`, which resolves
 /// [`PartnerScope`] and 403s anyone holding no partner role in that org).
 /// Mounted by the `oxy-server` composition root.
 ///
-/// Every handler here is Postgres-only, so these routes are **FleetOk by
-/// default** — they are (deliberately) unlisted in `role_manifest.rs`, which
-/// means HA-safe and not workspace-scoped. Keep them that way: a route added
-/// here that touches the workspace FS, `.git`, or the state dir would need an
-/// `IdeOnly` classification the manifest never sees for this crate.
+/// Every handler here but one is Postgres-only, so these routes are **FleetOk by
+/// default** — undeclared, which means HA-safe and not workspace-scoped. The one
+/// is `POST /orgs`, which scaffolds the new org's `Default` workspace onto
+/// node-local disk and is declared IdeOnly in [`route_roles`]. A route added
+/// here that touches the workspace FS, `.git`, or the state dir needs the same.
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/partners", get(list_my_partners))

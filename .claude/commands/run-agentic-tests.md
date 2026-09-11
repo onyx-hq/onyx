@@ -105,17 +105,21 @@ If healing happened (`.results/healing.json` non-empty), surface the
 
 When the dev wants to drive a backend they started themselves (e.g. to
 debug with a persistent Postgres volume across runs, attach a debugger,
-keep a created org around between runs), pass both `--no-auto-backend`
-and `--no-auto-frontend` and set `OXY_BASE_URL` / `OXY_HEALTH_URL`:
+run a cloud-mode flow that needs an org — no UI creates one, so it must
+be `oxy seed`ed first), pass both `--no-auto-backend` and
+`--no-auto-frontend` and set `OXY_BASE_URL` / `OXY_HEALTH_URL`:
 
 ```bash
 # Terminal 1 — start oxy yourself (cloud mode in this example)
 oxy-debug start --enterprise            # persistent Postgres state
+# once it is healthy: the `local` org + a compiled Demo workspace
+OXY_DATABASE_URL=postgresql://postgres:postgres@localhost:15432/oxy \
+  oxy-debug seed --workspace-path ./examples
 
 # Terminal 2 — point the runner at it
 OXY_HEALTH_URL=http://localhost:3001/api/health \
   OXY_BASE_URL=http://localhost:3001 \
-  pnpm test:agentic onboarding-blank-workspace --no-auto-backend --no-auto-frontend
+  pnpm test:agentic airway-pipeline-run.flow.test.yml --no-auto-backend --no-auto-frontend
 ```
 
 For local mode, use port 3000 with `oxy-debug start --local --enterprise`
@@ -142,7 +146,7 @@ gh workflow run "CI check" --repo oxy-hq/oxygen-internal \
 - **`agentic runner: cannot run flows with mixed backend_mode`** — the
   positional filters matched both local-mode and cloud-mode flows.
   Filter to one mode at a time (e.g. `pnpm test:agentic builder-edits-app
-  chat-ask` rather than `pnpm test:agentic builder onboarding`).
+  chat-ask` rather than `pnpm test:agentic builder admin-`).
 - **`backend did not become healthy`** — `oxy start --local --enterprise`
   or `oxy start --enterprise --clean` failed. Tail
   `web-app/tests/agentic/.logs/backend.log`. Common causes: Docker

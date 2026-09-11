@@ -11,7 +11,14 @@ import useCurrentWorkspace from "@/stores/useCurrentWorkspace";
  * launcher never renders a dead grid. Submitting navigates to the full
  * thread page (the Ask dock is the surface for in-context asks).
  */
-export function AskForwardFallback({ shouldDisableChat }: { shouldDisableChat: boolean }) {
+export function AskForwardFallback({
+  shouldDisableChat,
+  hasSetupSteps
+}: {
+  shouldDisableChat: boolean;
+  /** Whether the setup toast lists steps this viewer can take. */
+  hasSetupSteps: boolean;
+}) {
   const orgName = useCurrentOrg((s) => s.org?.name);
   // The workspace switcher navigates to this workspace's ROOT (the
   // launcher), which is the SAME route/element across a switch — so this
@@ -25,8 +32,13 @@ export function AskForwardFallback({ shouldDisableChat }: { shouldDisableChat: b
       </p>
       <div className='flex w-full max-w-4xl flex-col items-center gap-3'>
         {shouldDisableChat && (
-          <p className='text-center text-muted-foreground/50 text-xs'>
-            Complete the setup steps above to start chatting.
+          <p
+            className='text-center text-muted-foreground/50 text-xs'
+            data-testid='launcher-chat-locked-reason'
+          >
+            {hasSetupSteps
+              ? "Complete the setup steps above to start chatting."
+              : "Chat isn't set up for this workspace yet."}
           </p>
         )}
         <div

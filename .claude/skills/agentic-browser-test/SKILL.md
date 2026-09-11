@@ -112,7 +112,7 @@ settings:
 ```
 
 - `backend_mode: local` → `oxy start --local --enterprise` from `demo_project/`, runner targets `http://localhost:3000`.
-- `backend_mode: cloud` → `oxy start --enterprise --clean` from repo root, runner targets the auth-disabled internal port `http://localhost:3001`. `--clean` wipes the Postgres volume so create-org doesn't 409 on rerun. If a backend is already healthy at the resolved URL, the runner uses it as-is and does not respawn (no `--clean` side effect).
+- `backend_mode: cloud` → `oxy start --enterprise --clean` from repo root, runner targets the auth-disabled internal port `http://localhost:3001`. `--clean` wipes the Postgres volume, so it comes up with no org (and no UI creates one — orgs are staff/partner-made); a flow that needs org data runs against a backend you started and `oxy seed`ed first, as `scripts/verify-all.sh` phase 4 does. If a backend is already healthy at the resolved URL, the runner uses it as-is and does not respawn (no `--clean` side effect).
 - **All flows in a single invocation must agree on `backend_mode`.** The runner errors loudly on mixed-mode loads.
 
 ### Step `cache_scope`
@@ -126,7 +126,6 @@ steps:
 
 - `cache_scope: flow` (default): key = `sha256(flowFile|caseName|stepIndex|stepText)`. Recording is private to this flow/case/step.
 - `cache_scope: shared`: key = `sha256("shared|" + stepText)`. Two flows with byte-identical step text share one recording. Used today for (see `canonical-prompts.md` for the verbatim text):
-  - Cloud-mode onboarding prelude (welcome → create-org → skip-invite → blank workspace, plus the Anthropic-key step) in `onboarding-blank-workspace`.
   - Chat-prelude ("Submit … to the default agent…") shared by `chat-ask` and `threads-list`.
   - Builder dialog open (Cmd+I + auto-approve toggle + submit) shared by builder flows.
   - Sidebar navigation: `sidebar-app-link-<app-name>` and `sidebar-thread-link-<thread-id>` for flows that click into an app or thread from the sidebar.
@@ -243,7 +242,7 @@ pnpm test:agentic --scaffold <feature-name> --from <component-path>
 
 These must show up in every authoring + run command. Encoded in `web-app/tests/agentic/README.md`'s top-level policy section.
 
-1. **Read-only against external systems.** Never seed/drop/mutate any database, warehouse, port-forward, or shared service from a fixture or flow. The setup-command surface in `fixtures/reset.ts` is intentionally limited to `goto:`, `reset_test_file`, and `restore_demo_file:` — none of which can make a network call. Cloud-mode flows drive onboarding through the UI wizard rather than API seeding. Any proposed setup command that wants to call out is rejected at code-review.
+1. **Read-only against external systems.** Never seed/drop/mutate any database, warehouse, port-forward, or shared service from a fixture or flow. The setup-command surface in `fixtures/reset.ts` is intentionally limited to `goto:`, `reset_test_file`, and `restore_demo_file:` — none of which can make a network call. Data a flow reads (an org, a compiled workspace) is stood up from the shell beforehand with `oxy seed` / `scripts/seed-fixtures.sh`, never by the flow — and no UI creates orgs any more. Any proposed setup command that wants to call out is rejected at code-review.
 2. **Never type secrets as plaintext.** Use `${VAR}` placeholders for any value in `SECRET_ENV_VARS`. Adding a new secret env var requires extending the allowlist.
 3. **Never auto-promote Tier-2 healing recordings.** They stage to `.cache/healing-staging.json`, not `bespoke-actions.json`. Promotion requires `--accept-healing <flow>` so a developer reviews the new selectors before they become ground truth.
 
@@ -262,7 +261,9 @@ The agentic-tests job is a reusable workflow at `.github/workflows/agentic-tests
 | `ask-agent` | `chat-ask`, `chat-panel-agent-switch` | local | 3000 |
 | `threads` | `threads-list` | local | 3000 |
 | `ide` | `ide-save` | local | 3000 |
-| `onboarding` | `onboarding-blank-workspace` | **cloud** | 3001 |
+| `metric-tree` | `metric-tree`, `metric-tree-scenario` | local | 3000 |
+
+No bucket is cloud-mode: the one cloud bucket (`onboarding`) went with self-serve org creation.
 
 Filename → bucket mapping for new flows:
 - `builder-*` → `builder`
@@ -270,7 +271,7 @@ Filename → bucket mapping for new flows:
 - `chat-*` → `ask-agent`
 - `threads-*` → `threads`
 - `ide-*` → `ide`
-- `onboarding-*` → `onboarding`
+- `metric-tree-*` → `metric-tree`
 
 If a new flow doesn't match any prefix, surface to the dev: "This needs a new bucket entry in the `resolve-matrix` job's inline JSON in `.github/workflows/agentic-tests.yaml`. Buckets share `backend_mode`, so don't add a cloud-mode flow to a local-mode bucket — split the bucket by mode first. Also add the bucket name to the `flow_bucket` choice list in the workflow_dispatch trigger so dispatch UIs can target it."
 
@@ -370,7 +371,7 @@ cases:
       - judge:  <one sentence covering the success criterion>
 ```
 
-Filename: `web-app/tests/agentic/flows/<descriptive-kebab-name>.flow.test.yml`. Lower-kebab. Bucket-prefix the stem (`builder-…`, `chat-…`, `threads-…`, `ide-…`, `onboarding-…`) so CI bucketing is unambiguous.
+Filename: `web-app/tests/agentic/flows/<descriptive-kebab-name>.flow.test.yml`. Lower-kebab. Bucket-prefix the stem (`builder-…`, `chat-…`, `threads-…`, `ide-…`) so CI bucketing is unambiguous.
 
 ---
 
@@ -441,7 +442,7 @@ After the file is written and self-checks pass:
 
 The bespoke runtime is in active development. Re-read the README each invocation. Likely evolutions to watch:
 
-- **Bucket layout per (domain, mode)** when cloud-mode coverage lands in `builder` / `ask-agent` / `threads` / `ide`. Today only `onboarding` is cloud-mode.
+- **Bucket layout per (domain, mode)** when cloud-mode coverage lands in `builder` / `ask-agent` / `threads` / `ide`. Today no CI bucket is cloud-mode; the cloud flows (`admin-*`, `airway-pipeline-run`) run only from `scripts/verify-all.sh`.
 - **`cache_scope` collapsing to `shared: true` boolean** since only two values exist today.
 - **Structured shorthand DSL** (`click:` / `type:` / `press:` step kinds that compile to Playwright tool calls without an LLM round-trip) — discussed for ~40–50× cold cost reduction per pure-mechanical step. Not committed.
 
@@ -453,7 +454,7 @@ When the dev asks for something the current README doesn't support, **say so exp
 
 - Never invent setup commands, `wait_for:` primitives, `assert:` forms, or CLI flags the README / source doesn't document. The loader and judge throw on unknowns or silently ignore them — either way the flow breaks.
 - Never put real secrets in the YAML. Use `${VAR}` placeholders; ensure the var is in `SECRET_ENV_VARS`.
-- Never edit a flow whose name suggests it's actively in use (`chat-ask`, `ide-save`, `onboarding-blank-workspace`, etc.) when the dev is asking for a *new* flow. Create a new file. Use `/agentic-test-add-case` only when the dev explicitly says so.
+- Never edit a flow whose name suggests it's actively in use (`chat-ask`, `ide-save`, `threads-list`, etc.) when the dev is asking for a *new* flow. Create a new file. Use `/agentic-test-add-case` only when the dev explicitly says so.
 - Never use `cache_actions: false` as a "make it work" hack. Flaky warm-replay is a runtime bug — file it against the runner.
 - Never hand off YAML that hasn't passed parse + schema + dry-run lint.
 - Never auto-promote Tier-2 healing recordings; route the dev to `/accept-agentic-healing` instead.

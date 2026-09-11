@@ -5,12 +5,6 @@ export interface OnboardingResult {
   workspace_id: string;
 }
 
-export interface ReadinessResponse {
-  has_llm_key: boolean;
-  llm_keys_present: string[];
-  llm_keys_missing: string[];
-}
-
 export interface OnboardingResetRequest {
   /** Secret names to delete (e.g. `ANTHROPIC_API_KEY`). */
   secret_names: string[];
@@ -114,11 +108,6 @@ export class OnboardingService {
       name,
       subdir: subdir || undefined
     });
-    return response.data;
-  }
-
-  static async getReadiness(workspaceId: string): Promise<ReadinessResponse> {
-    const response = await apiClient.get<ReadinessResponse>(`/${workspaceId}/onboarding-readiness`);
     return response.data;
   }
 

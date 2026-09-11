@@ -165,6 +165,10 @@ pub(super) async fn count_workspaces_per_org(
 ) -> Result<HashMap<Uuid, i64>, StatusCode> {
     let rows: Vec<OrgCountRow> = Workspaces::find()
         .filter(workspaces::Column::OrgId.is_in(org_ids.to_vec()))
+        // Same exclusion as `list_workspaces`: the legacy `--local` nil-UUID
+        // workspace can't be opened in cloud, so counting it would disagree with
+        // the list (a count of 1 over an empty list).
+        .filter(workspaces::Column::Id.ne(Uuid::nil()))
         .select_only()
         .column(workspaces::Column::OrgId)
         .column_as(Expr::col(workspaces::Column::Id).count(), "count")

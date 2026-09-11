@@ -29,6 +29,8 @@ mod publish;
 pub mod run;
 pub mod seed;
 mod seed_apps;
+mod seed_compile;
+mod seed_llm_keys;
 mod seed_partners;
 mod seed_platform_grants;
 mod seed_storage;
@@ -447,6 +449,18 @@ pub struct SeedArgs {
     /// partner + tenant rows. Leaves the Local org + guest user in place.
     #[clap(long)]
     pub clear: bool,
+    /// Skip compiling + promoting the seeded workspaces. Without the compile a
+    /// seeded workspace answers `503 needs_recompile` until `oxy compile
+    /// --promote` runs for it.
+    #[clap(long, conflicts_with = "clear")]
+    pub no_compile: bool,
+    /// Copy the LLM keys each seeded workspace's `config.yml` references from
+    /// this shell's environment into its secrets store. Opt-in because the
+    /// values are your real credentials: a URL can look local and still reach a
+    /// shared database (a port-forward), so the locality check alone is not
+    /// consent. `just up` passes it; the database guard still applies.
+    #[clap(long, conflicts_with = "clear")]
+    pub llm_keys: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -1368,9 +1382,14 @@ async fn handle_seed_command(seed_args: SeedArgs) -> Result<(), OxyError> {
         clear_demo().await?;
         seed_partners::clear_partner_tenants().await
     } else {
-        // `seed_demo` seeds the demo workspace AND (folded in) the partner +
-        // tenant data — one command, no `--partners` flag.
-        seed_demo(seed_args.workspace_path).await
+        // Seeds the demo workspace AND (folded in) the partner + tenant data —
+        // one command, no `--partners` flag — then compiles, and stores LLM keys
+        // only when asked to (`--llm-keys`).
+        let options = SeedOptions {
+            compile: !seed_args.no_compile,
+            llm_keys: seed_args.llm_keys,
+        };
+        seed_demo_with(seed_args.workspace_path, options).await
     }
 }
 

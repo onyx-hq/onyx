@@ -39,6 +39,8 @@ pub use workspace_health::{WorkspaceHealthRow, health_rollup};
 use axum::Router;
 use axum::middleware;
 
+use oxy_shared::fleet_role::{RouteRole, RouteRoleDecl};
+
 use crate::server::api::middlewares::{app_scope_guard, oxy_owner_guard, platform_cap_guard};
 use crate::server::authz::Action;
 use crate::server::feature_flags;
@@ -237,6 +239,29 @@ pub(crate) fn router() -> Router<AppState> {
     // It has to be reachable while acting (that's where the exit is) and by
     // partners (who are not staff and would be 403'd by this surface's guard).
     staff_surface
+}
+
+/// Which pod serves each route [`router`] mounts, relative to its `/admin` nest.
+///
+/// FleetOk wholesale: the console is Postgres CRUD, and the one filesystem read
+/// under it (`reconcile.yml`, for workspace health) runs on the worker, not the
+/// request path. The exceptions are declared beside their routes and win on
+/// specificity over the wildcard.
+pub(crate) fn router_roles() -> &'static [RouteRoleDecl] {
+    const ROLES: &[RouteRoleDecl] = &[
+        RouteRoleDecl {
+            method: "*",
+            path: "",
+            role: RouteRole::FleetOk,
+        },
+        RouteRoleDecl {
+            method: "*",
+            path: "/{*rest}",
+            role: RouteRole::FleetOk,
+        },
+        orgs_admin::CREATE_ORG_ROLE,
+    ];
+    ROLES
 }
 
 #[cfg(test)]

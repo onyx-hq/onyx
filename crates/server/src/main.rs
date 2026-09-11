@@ -178,17 +178,22 @@ fn main() {
             // is the first extracted sibling; more merge in as they're pulled
             // out of oxy-app. `cli` forwards these into `serve`'s `api_router`,
             // where they join the protected tree before the auth middleware.
-            // Roles travel WITH the routes. `oxy-api-github` and
-            // `oxy-api-partner-console` mount Postgres-only surfaces, so the
-            // FleetOk default is the truth and they declare nothing.
-            // `oxy-api-onboarding` clones a repository and scaffolds `config.yml`
-            // onto node-local disk — it cannot take that default, and no type
-            // gate inside oxy-app can see across the crate line to stop it.
+            // Roles travel WITH the routes. `oxy-api-github` mounts a
+            // Postgres-only surface, so the FleetOk default is the truth and it
+            // declares nothing. `oxy-api-onboarding` clones a repository and
+            // scaffolds `config.yml` onto node-local disk, and
+            // `oxy-api-partner-console`'s create-org scaffolds the new org's
+            // Default workspace — neither can take that default, and no type
+            // gate inside oxy-app can see across the crate line to stop them.
             let exit_code = match cli(
                 oxy_api_github::routes()
                     .merge(oxy_api_partner_console::routes())
                     .merge(oxy_api_onboarding::routes()),
-                oxy_api_onboarding::route_roles().to_vec(),
+                oxy_api_onboarding::route_roles()
+                    .iter()
+                    .chain(oxy_api_partner_console::route_roles())
+                    .copied()
+                    .collect(),
                 oxy_api_onboarding::workspace_routes(),
                 oxy_api_onboarding::workspace_route_roles().to_vec(),
             )

@@ -31,7 +31,7 @@ A JSON file at `tests/agentic/.cache/bespoke-actions.json`. For every `act:` ste
 - **Warm run** = action-cache hit. The runtime replays the recorded sequence directly against Playwright with **no LLM call**. Per-case cost floors at the judge call (~$0.002 with Haiku 4.5).
 - **Invalidation** is drop-and-redrive: if a recorded selector no longer matches the page, the entry throws on replay, the runtime invalidates the entry, and re-derives from scratch. There is no partial-replay path.
 
-The cache key is `sha256(flow_file | case_name | step_index | step_text)` by default — per-flow scope. Editing a step's text invalidates only that step's entry; adjacent steps in the same case still warm-replay. **Cross-flow reuse is opt-in via `cache_scope: shared`** on a per-step basis (key becomes `sha256("shared|" + step_text)`). Two flows with byte-identical step text that both opt into shared scope resolve to the same entry — record once, replay free across both. Canonical preludes live in [`canonical-prompts.md`](./canonical-prompts.md): the cloud-mode onboarding prelude (used by `onboarding-blank-workspace`) and the chat-prelude (shared by `chat-ask` and `threads-list`).
+The cache key is `sha256(flow_file | case_name | step_index | step_text)` by default — per-flow scope. Editing a step's text invalidates only that step's entry; adjacent steps in the same case still warm-replay. **Cross-flow reuse is opt-in via `cache_scope: shared`** on a per-step basis (key becomes `sha256("shared|" + step_text)`). Two flows with byte-identical step text that both opt into shared scope resolve to the same entry — record once, replay free across both. Canonical preludes live in [`canonical-prompts.md`](./canonical-prompts.md) — e.g. the chat prelude shared by `chat-ask` and `threads-list`.
 
 `cache_actions: false` in flow settings disables the cache entirely (forces all steps cold).
 
@@ -68,14 +68,13 @@ The runner picks the right backend boot for the loaded flows by reading each flo
 | `local` (default) | `oxy start --local --enterprise` (`demo_project/`) | `http://localhost:3000` (auth-disabled in `--local`) |
 | `cloud` | `oxy start --enterprise --clean` (repo root) | `http://localhost:3001` (auth-disabled internal port) |
 
-Cloud mode passes `--clean` so the Postgres volume comes up empty and the flow's create-org step doesn't 409 on a rerun. If a backend is already healthy at the resolved URL, the runner uses it as-is and does not respawn (no `--clean` side effect). All flows loaded in a single invocation must agree on `backend_mode` — the runner errors loudly if you mix.
+Cloud mode passes `--clean` so the Postgres volume comes up empty and a flow that writes rows starts from the same state on a rerun. If a backend is already healthy at the resolved URL, the runner uses it as-is and does not respawn (no `--clean` side effect). All flows loaded in a single invocation must agree on `backend_mode` — the runner errors loudly if you mix.
 
 Requires `oxy` on `PATH` and Docker Desktop running, since `oxy start` brings up Postgres in a container.
 
 ```bash
 pnpm test:agentic                          # all flows in the default (local) mode set
 pnpm test:agentic chat-ask                 # filename match
-pnpm test:agentic onboarding-blank-workspace   # cloud-mode flow — runner auto-spawns cloud backend
 pnpm test:agentic --tag critical           # tag filter
 pnpm test:agentic --output results.json    # write JSON (also auto-written under .results/)
 HEADED=1 pnpm test:agentic chat-ask        # see browser
@@ -166,7 +165,7 @@ Defined in `runner/tool-registry.ts`. Available to the LLM in every step:
 | `browser_type` | Fill or append into an input/textarea. 5s timeout. |
 | `browser_press_key` | Single key or chord (Enter, Meta+s, …). |
 | `browser_keyboard_type` | Type via raw keyboard into the focused element. Use for Monaco. |
-| `browser_file_upload` | Attach files to an `<input type="file">` via Playwright's `setInputFiles`. Used by the DuckDB onboarding wizard upload step. Paths are repo-relative; absolute paths and `..` traversal are refused. |
+| `browser_file_upload` | Attach files to an `<input type="file">` via Playwright's `setInputFiles`. Built for the workspace setup wizard's DuckDB upload step (no committed flow uses it since `onboarding-blank-workspace` was deleted). Paths are repo-relative; absolute paths and `..` traversal are refused. |
 | `browser_navigate` | Go to a URL. |
 | `browser_screenshot` | PNG base64. Expensive; the judge already screenshots, so prefer `browser_snapshot`. |
 | `browser_wait_for_selector` | Wait up to 10s for visibility. |
@@ -239,11 +238,11 @@ Older flows under `cache_actions: false` were written before egress substitution
 
 ### Cloud-mode flows
 
-Flows that test the multi-tenant onboarding (org → workspace) declare `backend_mode: cloud` in their settings. The runner spawns `oxy start --enterprise --clean` and drives the auth-disabled internal port (3001). `--clean` wipes the local oxy Postgres volume, so any orgs/workspaces from previous runs are gone — the create-org step in the flow always starts from a fresh DB.
+Flows that need the multi-tenant (org → workspace) shape declare `backend_mode: cloud` in their settings. The runner spawns `oxy start --enterprise --clean` and drives the auth-disabled internal port (3001). `--clean` wipes the local oxy Postgres volume, so any orgs/workspaces from previous runs are gone and every run starts from a fresh DB.
 
 Driving the **authenticated** public port (3000) instead — worth it when you're debugging something auth-shaped by hand, or pointing Playwright MCP at a running server — no longer requires OAuth or the magic-link email preview: set `OXY_DEV_LOGIN_EMAILS` and navigate to `/dev-login` (see the "Dev sign-in" section in `DEVELOPMENT.md`). Committed flows still use 3001; nothing here changes.
 
-`onboarding-blank-workspace` is the canonical cloud-mode flow and runs in CI. It uses DuckDB as the warehouse and uploads the committed `demo_project/.db/oxymart.csv` (a Walmart-style retail dataset) via `browser_file_upload`. DuckDB is file:// only with no network credentials, so this flow is structurally incapable of hitting a port-forward to production — the failure mode of the 2026-05-06 incident. `builder-edits-app` used to run in cloud mode against a freshly-onboarded Demo Workspace, but the cloud-mode prelude duplicated coverage from `onboarding-blank-workspace`; it now runs in local mode against `demo_project/insights.app.yml` directly with a `restore_demo_file:insights.app.yml` setup command to revert the builder's edits between runs.
+No CI bucket runs a cloud-mode flow today. The last one, `onboarding-blank-workspace`, walked self-serve org creation (welcome → create org → skip invite → blank workspace → setup wizard), and that path no longer exists: orgs are provisioned by Oxygen staff or a partner, every new org gets a Default workspace, and a user with no org lands on a "not part of an organization yet" page with only invites, join-by-link and log out. A cloud-mode flow therefore needs an org to exist before it starts — there is no UI to create one outside the admin console. The committed cloud flows (`admin-*`, `airway-pipeline-run`) run from `scripts/verify-all.sh` phase 4, which starts `oxy start --enterprise` itself and runs `oxy seed` before the runner reuses that backend (a runner-spawned `--clean` one would come up empty). Whatever it uses, keep the warehouse file-based (DuckDB), so the flow stays structurally incapable of hitting a port-forward to production — the failure mode of the 2026-05-06 incident. `builder-edits-app` runs in local mode against `demo_project/insights.app.yml` directly, with a `restore_demo_file:insights.app.yml` setup command to revert the builder's edits between runs.
 
 ### Driving a fleet or remote deployment (bypassing `backend_mode`)
 
@@ -284,30 +283,6 @@ Two structural limits worth knowing before trying to widen fleet coverage:
   that routes nowhere. Three admin flows failed exactly that way before the list
   existed, each looking like an unrelated broken page rather than one misconfigured
   harness.
-
-### Runbook: onboarding-blank-workspace (local manual run)
-
-This flow runs in CI on every PR (when `web-app` or `oxy` change groups are non-empty), but you can also drive it locally for debugging. The flow uploads `demo_project/.db/oxymart.csv` into a fresh workspace's DuckDB warehouse — entirely file-based, no external systems touched.
-
-```bash
-# Bring up oxy in cloud mode with --clean (clears any prior orgs +
-# workspaces from postgres so the org-creation step doesn't 409):
-oxy-debug start --clean --enterprise &
-
-# Run the flow against the auth-disabled internal port (3001):
-OXY_HEALTH_URL=http://localhost:3001/api/health \
-  OXY_BASE_URL=http://localhost:3001 \
-  ANTHROPIC_API_KEY=sk-ant-... \
-  pnpm test:agentic onboarding-blank-workspace --no-auto-backend --no-auto-frontend
-```
-
-Or just let the runner spawn the backend itself (default with `backend_mode: cloud`):
-
-```bash
-ANTHROPIC_API_KEY=sk-ant-... pnpm test:agentic onboarding-blank-workspace
-```
-
-Realistic cost: ~$1.00 cold / ~$0.01 warm. Wall-clock 5–8 min cold, dominated by the build phase (60–180 s).
 
 ## Output format
 

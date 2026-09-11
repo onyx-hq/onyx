@@ -14,7 +14,7 @@ import {
 import { Spinner } from "@/components/ui/shadcn/spinner";
 import { useDevLogin } from "@/hooks/auth/useDevLogin";
 import ROUTES from "@/libs/utils/routes";
-import { describeDevLoginFailure } from "./describeDevLoginFailure";
+import { describeDevLoginFailure, serverReason } from "./describeDevLoginFailure";
 
 /**
  * `/dev-login` — one navigation, one signed-in browser.
@@ -27,6 +27,7 @@ import { describeDevLoginFailure } from "./describeDevLoginFailure";
  *
  * Query params — all optional:
  *   `email`     which configured identity to sign in as (default: the first)
+ *   `as`        a seeded persona instead of an email, e.g. `/dev-login?as=member`
  *   `next`      same-origin path to land on, e.g. `/dev-login?next=/ide`
  *   `return_to` cross-origin destination, validated server-side
  */
@@ -34,6 +35,7 @@ const DevLogin: React.FC = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const email = searchParams.get("email") ?? undefined;
+  const persona = searchParams.get("as") ?? undefined;
   const returnTo = searchParams.get("return_to") ?? undefined;
   const next = searchParams.get("next");
   // `setFailure` is a stable useState setter, so it stays correct even when the
@@ -54,8 +56,8 @@ const DevLogin: React.FC = () => {
   useEffect(() => {
     if (fired.current) return;
     fired.current = true;
-    devLogin({ email });
-  }, [devLogin, email]);
+    devLogin({ email, as: persona });
+  }, [devLogin, email, persona]);
 
   if (failure) {
     return (
@@ -70,7 +72,11 @@ const DevLogin: React.FC = () => {
             </div>
             <CardTitle className='text-2xl'>Dev sign-in unavailable</CardTitle>
             <CardDescription>
-              {describeDevLoginFailure(failure.response?.status, email)}
+              {describeDevLoginFailure(
+                failure.response?.status,
+                email,
+                serverReason(failure.response?.data)
+              )}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -90,7 +96,9 @@ const DevLogin: React.FC = () => {
     >
       <div className='flex flex-col items-center gap-3'>
         <Spinner />
-        <p className='text-muted-foreground text-sm'>Signing in{email ? ` as ${email}` : ""}…</p>
+        <p className='text-muted-foreground text-sm'>
+          Signing in{email || persona ? ` as ${email ?? persona}` : ""}…
+        </p>
       </div>
     </div>
   );

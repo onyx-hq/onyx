@@ -111,9 +111,10 @@ clicking through it, screenshotting it, reproducing a reported bug. Different jo
 the flows above, which are the committed regression suite: don't hand-drive a flow you
 should be writing, don't write a flow to see a page once.
 
-Signing in is one navigation, not OAuth: with `OXY_DEV_LOGIN_EMAILS` set,
-`browser_navigate("http://localhost:5173/dev-login")` leaves the browser holding a real
-session. Setup, query params, and the `curl` form: **Dev sign-in** in `DEVELOPMENT.md`.
+The loop is `just up` (build, start, seed, Vite — idempotent), then read `.oxy-dev/state.json`,
+then one `browser_navigate("http://127.0.0.1:5173/dev-login?as=<persona>&next=<path>")` — that
+navigation is the whole sign-in, no OAuth. Personas, routes, and what a 403/409/503 means:
+the `oxy-run-and-verify` skill.
 
 ## `oxyc` — talking to a running deployment
 
@@ -154,11 +155,11 @@ free-text areas, not scoped parens.
 
 ## Database & Runtime
 
-- **DB**: dev auto-starts embedded PostgreSQL (`~/.local/share/oxy/postgres_data/`); override
-  with `OXY_DATABASE_URL`. Migrations run on startup (`cargo run --bin migration` to force).
-  Entities in `entity`, migrations in `migration`.
-- **Docker** (`oxy start`): containers managed via `bollard` (not docker-compose) —
-  `oxy-postgres` container, `oxy-postgres-data` volume; `oxy start --clean` for a fresh slate.
+- **DB**: there is no embedded Postgres — `oxy serve` refuses to boot without `OXY_DATABASE_URL`.
+  `oxy start` runs one in Docker (via `bollard`, not docker-compose): container `oxy-postgres` on
+  `localhost:15432` (postgres/postgres, db `oxy`), volume `oxy-postgres-data`, and sets the URL
+  for its own process only; `--clean` for a fresh slate. Migrations run on startup
+  (`cargo run --bin migration` to force). Entities in `entity`, migrations in `migration`.
 - **Local development runs the production path** — `oxy serve --enterprise`, or `oxy start`
   for a Docker-Postgres dev box. Use it for tests, demos, role-split, S3/worker-fleet, and
   anything production-shaped. (`--local` is the legacy no-auth mode; see product-context.md.)
@@ -214,6 +215,7 @@ skill** rather than reasoning it out again — its `SKILL.md` carries the full c
 | `oxy-compile-boundary` | new `.foo.yml` file type, or any per-request read that walks the workspace FS | every workspace artifact is a `*_definitions` Postgres row keyed by `revision_id`, not an FS read |
 | `oxy-route-classification` | add/move a route under `server/router/`, or a handler touching disk/`.git`/state dir | FS-touching routes MUST be `IdeOnly` in `role_manifest.rs`; persisted-data reads MUST stay `FleetOk` |
 | `oxy-customer-apps-perf` | add/move a `/customer-apps/**` route or custom-app data endpoint; any per-request read on that hot path | serving routes need Cache-Control + SSE-safe compression; result caches keyed `project_id`-first, read after auth gates, honor `?refresh` |
+| `oxy-run-and-verify` | verify a change in the running app, seed data, sign in as a persona, screenshot a feature or reproduce a UI bug | never `--local`; `just up`, not hand-started servers; sign in by persona (`/dev-login?as=`), never by editing env |
 
 PRs that violate the right-hand column should be challenged through the matching skill.
 

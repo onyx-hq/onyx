@@ -16,7 +16,7 @@ web-app/tests/agentic/flows/<descriptive-kebab-name>.flow.test.yml
 
 Lower-kebab. **Prefix the stem with the bucket it'll land in**:
 `builder-…`, `semantic-…`, `chat-…`, `threads-…`, `ide-…`,
-`onboarding-…`. CI bucketing keys off this prefix.
+`metric-tree-…`. CI bucketing keys off this prefix.
 
 Always include the `# yaml-language-server: $schema=` header pointing at
 `json-schemas/flow-test.json` — IDE autocomplete and inline diagnostics
@@ -68,7 +68,7 @@ Authoritative: `web-app/tests/agentic/fixtures/reset.ts:SetupCommand`.
 | `restore_demo_file:<rel>` | local | Reverts `demo_project/<rel>` to `git show HEAD:demo_project/<rel>`. Used by flows that mutate demo files (builder editing `insights.app.yml`, semantic-builder-ask editing `sales_semantics/views/oxymart.view.yml`). Refuses paths escaping repo, containing `..`, or resolving through symlinks. |
 | `goto:<path>` | both | Navigate to `<OXY_BASE_URL><path>`. |
 
-The set is intentionally minimal — none of these can make a network call. Cloud-mode flows drive onboarding through the UI wizard rather than API seeding.
+The set is intentionally minimal — none of these can make a network call. No UI creates orgs any more, so a cloud-mode flow that needs one runs against a backend `oxy seed`ed beforehand (`scripts/verify-all.sh` phase 4).
 
 **Don't invent commands.** Unknown setup commands throw at load time.
 
@@ -309,7 +309,7 @@ buckets** (not one job per flow):
 | `ask-agent` | `chat-ask`, `chat-panel-agent-switch` | local |
 | `threads` | `threads-list` | local |
 | `ide` | `ide-save` | local |
-| `onboarding` | `onboarding-blank-workspace` | cloud |
+| `metric-tree` | `metric-tree`, `metric-tree-scenario` | local |
 
 Buckets share `backend_mode`. Adding a cloud-mode flow to a local-mode
 bucket needs a bucket split first.

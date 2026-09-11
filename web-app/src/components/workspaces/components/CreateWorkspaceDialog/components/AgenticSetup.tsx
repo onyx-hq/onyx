@@ -53,8 +53,8 @@ export default function AgenticSetupPage() {
 
 function AgenticSetupForWorkspace({ storageKey }: { storageKey: string }) {
   // Must share Home's probe so the two pages can't disagree on "is
-  // onboarding done?" — `useOnboardingReadiness` is coarser (any LLM key
-  // set) and would ping-pong with Home's per-`key_var` view.
+  // onboarding done?" — a coarser gauge (any LLM key set) would ping-pong
+  // with Home's per-`key_var` view.
   const {
     data: githubSetup,
     isPending: setupPending,

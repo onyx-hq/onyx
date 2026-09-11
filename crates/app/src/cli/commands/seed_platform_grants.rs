@@ -82,6 +82,15 @@ const GRANTS: &[GrantSeed] = &[
     },
 ];
 
+/// The unscoped App Operator — what `/api/auth/dev-login?as=operator` names.
+#[cfg(test)]
+pub(crate) fn unscoped_app_operator_email() -> Option<&'static str> {
+    GRANTS
+        .iter()
+        .find(|g| g.role == PlatformRole::AppOperator && g.scope_org_slug.is_none())
+        .map(|g| g.email)
+}
+
 /// Seed the staff grants. Skips (does not error) on a non-local database, matching
 /// `seed_partner_tenants` so the folded `oxy seed` stays safe to run anywhere.
 pub async fn seed_platform_grants() -> Result<(), OxyError> {

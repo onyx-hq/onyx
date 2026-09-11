@@ -240,7 +240,7 @@ Cross-cutting UI flows are tested by `web-app/tests/agentic/`. Treat this as a r
 - Chat panel / launcher / Ask surfaces (`pages/launcher/**`, `components/Ask/**`, `components/Chat/**`) → `flows/chat-*.flow.test.yml`, `flows/launcher-*.flow.test.yml`
 - IDE (`pages/ide/**`) → `flows/ide-*.flow.test.yml`
 - Builder dialog (`components/BuilderDialog/**`) → `flows/builder-*.flow.test.yml`
-- Onboarding (`pages/onboarding/**`, `components/workspaces/**`) → `flows/onboarding-*.flow.test.yml`
+- Onboarding (`pages/onboarding/**`, `components/workspaces/**`) → no flow today (`onboarding-blank-workspace` went with self-serve org creation); add one with `/test-feature` when you change these
 - Semantic model + agentic analytics integration (`pages/thread/analytics/**`, `pages/ide/Objects/SemanticLayer/**`) → `flows/semantic-*.flow.test.yml`
 
 **Skill-driven workflow (preferred for authoring + triage):**
@@ -282,6 +282,6 @@ pnpm test:agentic --check-coverage --staged < <(git diff --cached --name-only)
   - `file-change-accept` / `file-change-reject` — per-`edit_file` suspension buttons in the analytics thread view.
   - `reasoning-pill-<label-kebab>` — agentic-analytics reasoning trace artifact pills (e.g. `reasoning-pill-semantic-query`, `reasoning-pill-compile-semantic-query`); clicking opens the right-side artifact sidebar.
 
-**Hard rule (per the 2026-05-06 incident):** never seed/mutate external systems (warehouses, port-forwarded services). The setup-command surface in `tests/agentic/fixtures/reset.ts` is intentionally minimal — `goto:`, `reset_test_file`, and `restore_demo_file:` only, none of which can make a network call. Cloud-mode flows drive onboarding through the UI wizard rather than via API seeding. Any new setup command that would call out is prohibited. See `tests/agentic/README.md` policy section for details.
+**Hard rule (per the 2026-05-06 incident):** never seed/mutate external systems (warehouses, port-forwarded services). The setup-command surface in `tests/agentic/fixtures/reset.ts` is intentionally minimal — `goto:`, `reset_test_file`, and `restore_demo_file:` only, none of which can make a network call. Flows never seed their own data: a cloud-mode flow that needs an org runs against a backend prepared beforehand with `oxy seed` (see `scripts/verify-all.sh`), since no UI creates orgs any more. Any new setup command that would call out is prohibited. See `tests/agentic/README.md` policy section for details.
 
 **Adding a new flow:** prefer `/test-feature <description>` (the skill greps for testids, picks the right primitives, validates against the schema, and adds a `_budgets.yml` entry). For component-driven bootstrapping you can also use `pnpm test:agentic --scaffold <name> --from <component-path>` directly. See `tests/agentic/canonical-prompts.md` for copy-pasteable prelude steps that share cache entries via `cache_scope: shared`.

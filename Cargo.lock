@@ -9295,7 +9295,6 @@ dependencies = [
 name = "oxy-api-onboarding"
 version = "0.5.145"
 dependencies = [
- "agentic-pipeline",
  "axum",
  "chrono",
  "entity",
@@ -9327,6 +9326,7 @@ dependencies = [
  "oxy-auth",
  "oxy-authz",
  "oxy-server-authz",
+ "oxy-shared",
  "sea-orm",
  "serde",
  "serde_json",

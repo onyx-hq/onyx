@@ -179,8 +179,10 @@ export interface AuthConfigResponse {
 /**
  * `POST /auth/dev-login`. Omit `email` to sign in as the first identity in
  * `OXY_DEV_LOGIN_EMAILS`; any email passed must be on that list or the server
- * returns 403.
+ * returns 403. `as` names a seeded persona (`staff`, `owner`, `member`,
+ * `operator`, `partner`) instead — exclusive with `email`.
  */
 export interface DevLoginRequest {
   email?: string;
+  as?: string;
 }

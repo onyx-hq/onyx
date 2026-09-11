@@ -1,7 +1,8 @@
 # Worked Examples
 
-Six end-to-end examples covering the distinct surfaces / modes that ship
-in CI today. Each example shows the dev's request, the inferred answers,
+Five end-to-end examples covering the distinct surfaces / modes that ship
+in CI today (all local-mode: the cloud-mode onboarding example went with
+self-serve org creation). Each example shows the dev's request, the inferred answers,
 the resulting YAML, and why it's shaped the way it is.
 
 **The canonical reference is `web-app/tests/agentic/flows/*.flow.test.yml`
@@ -152,191 +153,11 @@ cases:
   than an immediate `isVisible()`, which races on the Meta+s → React
   state flush.
 - `.monaco-editor` is one of the two intentionally-ignored lint findings
-  (text-only-selector). The file-input id selector in the onboarding
-  example is the other.
+  (text-only-selector).
 
 ---
 
-## 3. Cloud-mode onboarding end-to-end — `backend_mode: cloud`, `browser_file_upload`, `selector_hidden:`
-
-**Dev says:** *"end-to-end onboarding regression: a new user creates an
-org, skips invite, picks blank workspace, configures DuckDB with our
-oxymart CSV, and the dashboard apps render"*
-
-**Inferred:**
-- Surface: `onboarding`. Bucket: `onboarding`.
-- Backend mode: **cloud** — onboarding lives in the multi-tenant boot.
-- Uses the canonical cloud-mode prelude from `canonical-prompts.md` with
-  `cache_scope: shared`.
-- Uses `browser_file_upload` to attach the committed `oxymart.csv` to the
-  DuckDB warehouse form. DuckDB is file:// only with no network
-  credentials — structurally incapable of touching a port-forward.
-- Uses `${ANTHROPIC_API_KEY}` for the API key step (egress-substituted).
-- Uses `selector_hidden:` to gate the final judge on the app-preview
-  spinner clearing — warm replays would otherwise screenshot the loading
-  state.
-
-```yaml
-# web-app/tests/agentic/flows/onboarding-blank-workspace.flow.test.yml
-# yaml-language-server: $schema=../../../../json-schemas/flow-test.json
-#
-# Cloud-mode prelude + agentic onboarding wizard, DuckDB warehouse, with
-# the committed `demo_project/.db/oxymart.csv` as the upload payload.
-# Verifies the generated apps load and the analytics agent answers a
-# suggested prompt.
-#
-# **Why DuckDB:** the earlier ClickHouse version of this flow had
-# defaults that matched a kubectl port-forward to production. DuckDB is
-# file:// only — no host/port/credentials to misconfigure.
-
-name: blank workspace onboarding end-to-end (DuckDB + oxymart.csv)
-target: onboarding
-
-settings:
-  runs: 1
-  trace: on-failure
-  cache_actions: true
-  backend_mode: cloud
-  max_steps: 80
-
-setup:
-  - "goto:/"
-
-cases:
-  - name: onboard a fresh DuckDB workspace and verify apps + prompt work
-    tags: [onboarding, regression, slow]
-    steps:
-      # ── Cloud-mode prelude (verbatim from canonical-prompts.md) ────────
-      - wait_for: "selector:text=Welcome to Oxygen"
-
-      - act: |
-          On the "Welcome to Oxygen" page, click the card with
-          [data-testid=onboarding-create-org-card] (the leftmost option labeled
-          "Create organization"). A dialog with [data-testid=onboarding-create-org-dialog]
-          opens.
-        cache_scope: shared
-
-      - act: |
-          Fill in the org dialog and submit:
-          1. browser_click [data-testid=onboarding-org-name-input], then browser_type
-             text "Sample Test Org".
-          2. The slug field [data-testid=onboarding-org-slug-input] auto-populates;
-             leave it untouched.
-          3. browser_click [data-testid=onboarding-create-org-submit].
-          The dialog closes and the URL changes to /<slug>/onboarding?step=invite.
-        cache_scope: shared
-
-      - wait_for: "selector:text=Invite your team"
-
-      - act: |
-          On the invite step, click [data-testid=onboarding-skip-invite-button]
-          to bypass invitations. The page advances to the workspace step.
-        cache_scope: shared
-
-      - wait_for: "selector:text=Create your first workspace"
-
-      - act: |
-          Click [data-testid=onboarding-blank-workspace-card]. The form swaps
-          to a workspace-name prompt.
-        cache_scope: shared
-
-      - act: |
-          Leave [data-testid=onboarding-workspace-name-input] empty (default
-          name) and click [data-testid=onboarding-create-workspace-button].
-          The page enters the "Setting up workspace…" loading state and
-          auto-redirects to /<slug>/workspaces/<uuid>/onboarding once ready.
-        cache_scope: shared
-
-      # ── Agentic wizard: API key (with ${VAR}) → warehouse → upload ─────
-      - wait_for: "selector:text=which LLM provider;timeout_ms=60000"
-
-      - act: browser_click [data-testid=onboarding-llm-provider-anthropic].
-
-      - act: |
-          Pick the Claude model. Try
-          [data-testid=onboarding-llm-model-claude-sonnet-4-6] first; if
-          absent, click the first `[data-testid^=onboarding-llm-model-]`
-          button whose visible label starts with "Claude".
-
-      - act: |
-          Fill the API key step:
-          1. browser_click [data-testid=onboarding-secure-input], then
-             browser_type text=${ANTHROPIC_API_KEY}.
-          2. browser_click [data-testid=onboarding-secure-input-submit].
-
-      - wait_for: "selector:text=connect your data warehouse;timeout_ms=60000"
-
-      - act: browser_click [data-testid=onboarding-warehouse-duckdb].
-
-      - act: |
-          Upload the committed oxymart.csv to the DuckDB warehouse:
-          1. browser_file_upload selector="#credential-dataset"
-             paths=["demo_project/.db/oxymart.csv"].
-          2. browser_click the form's CTA (label "Upload & Connect").
-
-      - wait_for: "selector:input[placeholder='Search tables...'];timeout_ms=60000"
-
-      - act: |
-          Select the one table. DuckDB exposes `oxymart.csv` as a table
-          named `oxymart` under the `main` schema:
-          1. browser_click the `main` schema row to expand it.
-          2. browser_click `text=oxymart` to select the table.
-          3. browser_click the confirm button (label "Continue with 1 table").
-
-      # Build phase. 60–180s on a 1-table DuckDB warehouse; up to 4 min if
-      # an LLM retry eats budget. Default 30s wait would fail every run —
-      # override via `;timeout_ms=` suffix.
-      - wait_for: "selector:text=Workspace ready;timeout_ms=300000"
-
-      # ── Post-completion: click a suggested prompt + open an app ────────
-      - act: |
-          On the completion screen, browser_click the FIRST suggested-
-          prompt button (under "Try these with your analytics agent").
-          URL changes to /threads/<id>; the chat panel auto-submits.
-
-      - wait_for: streaming_complete
-
-      - act: |
-          Open the first dashboard app from the left sidebar's "Apps"
-          section. URL changes to /apps/<base64>.
-
-      - wait_for: network_idle
-
-      # Warm replay finishes act/wait_for faster than the dashboard
-      # tasks render. Gate on the loading spinner clearing so the judge's
-      # screenshot captures a rendered dashboard, not the spinner.
-      - wait_for: "selector_hidden:[data-testid=app-preview-loading];timeout_ms=60000"
-
-    expect:
-      - judge: |
-          The screenshot shows a workspace dashboard app rendered without
-          an error banner — at least one display block (chart, table, or
-          markdown) is visible.
-```
-
-**Why this shape works:**
-- `backend_mode: cloud` tells the runner to spawn `oxy start --enterprise
-  --clean` and target the auth-disabled internal port 3001.
-- The first six steps are byte-identical to `canonical-prompts.md`'s
-  cloud-mode prelude — `cache_scope: shared` lets future cloud-mode flows
-  reuse the same recording.
-- `browser_file_upload` paths are repo-relative; `runner/files.ts`
-  refuses absolute paths and `..` traversal.
-- `${ANTHROPIC_API_KEY}` is a placeholder. The action cache and the
-  result artifact both store the literal `${ANTHROPIC_API_KEY}` string —
-  not the secret value. Substitution happens only at egress (Anthropic
-  API send + Playwright dispatch).
-- `selector_hidden:[data-testid=app-preview-loading]` solves the
-  "warm replay screenshots the spinner" class of flake — without it the
-  judge runs against a "Loading app…" state and the `at least one
-  display block visible` claim fails.
-- The first prelude `selector:text=Welcome to Oxygen` doesn't need a
-  testid — it's lint-flagged as `text-only-selector` but the runtime
-  falls back to a recorded role+name strategy on drift.
-
----
-
-## 4. Builder dialog — compound `act:`, `restore_demo_file:` fixture
+## 3. Builder dialog — compound `act:`, `restore_demo_file:` fixture
 
 **Dev says:** *"test the Cmd+I builder agent can add a chart to the
 insights dashboard"*
@@ -421,7 +242,7 @@ cases:
 
 ---
 
-## 5. Threads list — shared prelude across flows
+## 4. Threads list — shared prelude across flows
 
 **Dev says:** *"test that the threads list page renders and a user can
 open a past thread"*
@@ -501,7 +322,7 @@ cases:
 
 ---
 
-## 6. Regression pattern — bug-fix coverage
+## 5. Regression pattern — bug-fix coverage
 
 **Dev says:** *"add a regression test for the bug I just fixed where the
 agent selector text didn't update after switching agents mid-session"*
@@ -582,8 +403,6 @@ matches an existing one, **copy the exact wording from
 
 Common sub-sequences canonicalized today:
 
-- **Cloud-mode onboarding prelude** (welcome → create-org → skip-invite
-  → blank workspace) — copy from `canonical-prompts.md` § Onboarding.
 - **Submit a question to the default agent** — copy from
   `canonical-prompts.md` § Chat panel.
 

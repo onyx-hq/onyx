@@ -25,6 +25,7 @@ oxy-server-authz = { workspace = true } # partner_authz, partner_allows, assume_
 oxy-authz = { workspace = true }        # Action/Resource rings (app_mgmt access checks)
 oxy = { workspace = true }              # database client
 oxy-auth = { workspace = true }         # AuthenticatedUserExtractor
+oxy-shared = { workspace = true }       # fleet_role::RouteRoleDecl (route_roles)
 entity = { workspace = true }
 
 axum = { workspace = true }

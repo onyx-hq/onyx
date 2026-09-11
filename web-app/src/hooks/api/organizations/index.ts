@@ -24,7 +24,6 @@ export {
   useUpdateLocation
 } from "./useOperatingGraph";
 export {
-  useCreateOrg,
   useDeleteOrg,
   useDeleteOrgLogo,
   useOrgs,
@@ -33,7 +32,6 @@ export {
 } from "./useOrganizations";
 export {
   useAcceptInvitation,
-  useCreateBulkInvitations,
   useCreateInvitation,
   useMyInvitations,
   useOrgInvitations,

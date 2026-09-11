@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthService } from "@/services/api";
+import type { OrgInfo, UserInfo } from "@/types/auth";
 import {
   consumeReturnTo,
+  handlePostLoginOrgs,
   resolveReturnTo,
   returnToFromUrl,
   stashReturnTo
@@ -67,5 +69,25 @@ describe("postLoginRedirect return_to helpers", () => {
 
     window.history.pushState({}, "", "/login");
     expect(returnToFromUrl()).toBeNull();
+  });
+});
+
+describe("handlePostLoginOrgs", () => {
+  const user = (standing: Partial<UserInfo> = {}) =>
+    ({ is_owner: false, is_app_admin: false, ...standing }) as UserInfo;
+  const acme = { id: "org-1", name: "Acme", slug: "acme" } as OrgInfo;
+
+  afterEach(() => sessionStorage.clear());
+
+  it("sends a user with no org to the no-org page", () => {
+    expect(handlePostLoginOrgs(user(), [])).toBe("/onboarding");
+  });
+
+  it("sends staff standing with no org to the admin console, not an invite wait", () => {
+    expect(handlePostLoginOrgs(user({ is_app_admin: true }), [])).toBe("/admin/apps");
+  });
+
+  it("sends a member of an org to the dispatcher", () => {
+    expect(handlePostLoginOrgs(user({ is_app_admin: true }), [acme])).toBe("/");
   });
 });

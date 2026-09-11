@@ -60,7 +60,6 @@ const ROUTES = {
       WORKSPACES: `${base}/workspaces`,
       MEMBERS: `${base}/members`,
       SETTINGS: `${base}/settings`,
-      ONBOARDING: `${base}/onboarding`,
       BILLING: {
         CHECKOUT_SUCCESS: `${base}/billing/checkout-success`,
         CHECKOUT_CANCELLED: `${base}/billing/checkout-cancelled`

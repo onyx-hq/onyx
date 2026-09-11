@@ -3,12 +3,6 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
-pub struct CreateOrgRequest {
-    pub name: String,
-    pub slug: String,
-}
-
-#[derive(Deserialize)]
 pub struct UpdateOrgRequest {
     pub name: Option<String>,
     pub slug: Option<String>,

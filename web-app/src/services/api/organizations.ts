@@ -2,11 +2,6 @@ import type { MyInvitation, Organization, OrgInvitation, OrgMember } from "@/typ
 import { apiClient } from "./axios";
 
 export class OrganizationService {
-  static async createOrg(data: { name: string; slug: string }): Promise<Organization> {
-    const response = await apiClient.post<Organization>("/orgs", data);
-    return response.data;
-  }
-
   static async listOrgs(): Promise<Organization[]> {
     const response = await apiClient.get<Organization[]>("/orgs");
     return response.data;
@@ -64,17 +59,6 @@ export class OrganizationService {
       role
     });
     return response.data;
-  }
-
-  static async createBulkInvitations(
-    orgId: string,
-    invitations: Array<{ email: string; role: string }>
-  ): Promise<OrgInvitation[]> {
-    const response = await apiClient.post<{ invitations: OrgInvitation[] }>(
-      `/orgs/${orgId}/invitations/bulk`,
-      { invitations }
-    );
-    return response.data.invitations;
   }
 
   static async listInvitations(orgId: string): Promise<OrgInvitation[]> {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Navigate, useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { AppAccessDialog } from "@/components/appAccess/AppAccessDialog";
 import { RecentThreads } from "@/components/RecentThreads";
 import { Spinner } from "@/components/ui/shadcn/spinner";
@@ -67,9 +67,6 @@ const LauncherPage = () => {
       </div>
     );
   }
-  if (readiness.status === "redirect-onboarding") {
-    return <Navigate to={readiness.to} replace />;
-  }
 
   const hasApps = customApps.length > 0;
 
@@ -102,7 +99,10 @@ const LauncherPage = () => {
           <NeedsAttention />
         </>
       ) : (
-        <AskForwardFallback shouldDisableChat={readiness.shouldDisableChat} />
+        <AskForwardFallback
+          shouldDisableChat={readiness.shouldDisableChat}
+          hasSetupSteps={readiness.gaps.length > 0}
+        />
       )}
       <RecentThreads className='mx-auto w-full max-w-6xl px-6 pb-8' />
       {/* Gated on the same value as the button, so a member doesn't mount a dialog

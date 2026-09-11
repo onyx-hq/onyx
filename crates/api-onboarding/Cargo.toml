@@ -24,7 +24,6 @@ oxy-shared = { workspace = true }
 oxy-project = { workspace = true }
 oxy-git = { workspace = true }
 oxy-llm = { workspace = true }               # validate_provider_key (test-llm-key)
-agentic-pipeline = { workspace = true }      # scheduler::reconcile_health_schedule (post-setup)
 entity = { workspace = true }
 
 axum = { workspace = true }

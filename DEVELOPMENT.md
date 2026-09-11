@@ -71,40 +71,64 @@ cargo nextest run <test_name>     # a single test by name
 nextest shows failing-test output by default; add `--no-capture` to stream
 stdout from passing tests too.
 
-## Seed Test Data
+## Running the app locally
 
-The `seed` command is **deprecated**. It was built for an older data model and may not align with current org/project-aware flows.
+Local development runs the production path — cloud/enterprise mode with real auth. Never
+`--local`: that is the unmaintained single-workspace, no-auth mode.
 
-For development testing, prefer creating test data through normal app workflows.
-
-In development mode, if no authentication headers are provided, the system defaults to `guest@oxy.local`:
-
-```bash
-# Start the server
-cargo run serve
-
-# Test API - will use Guest by default
-curl http://localhost:3000/api/user
-curl http://localhost:3000/api/threads
-```
-
-## Web server
-
-Start the development server:
+### One command: `just up`
 
 ```bash
-cargo run serve
+just up        # build, start, seed, Vite — detached and idempotent; re-run after any change
+just status    # what is running and whether it answers (exit 1 when it is not serving)
+just down      # stop the backend + Vite; `just down --db` also stops the Postgres container
 ```
 
-This will only start the api server (or in some cases, with a frontend that is resulted from `pnpm build`)
-If you need to start the frontend, you can do so with the following commands:
+`just up` (`scripts/dev-up.sh`) does, in order:
+
+1. `cargo build -p oxy-server` — an incremental no-op when nothing changed.
+2. `oxy start --enterprise` — Docker Postgres on `localhost:15432`, the API on `:3000`, and
+   the no-auth internal API on `127.0.0.1:3001`. Reused while it is healthy and the binary is
+   unchanged; restarted when the build produced a new binary.
+3. `oxy seed --workspace-path ./examples` — the `local` org with the Demo workspace and the
+   `oxy-starter` custom app, plus the tenant orgs (`acme`, `northwind`, `globex`, …), every
+   workspace compiled and promoted. Idempotent.
+4. Vite on `http://127.0.0.1:5173`, proxying `/api` and `/customer-apps` to `:3000`. Web-app
+   edits hot-reload; nothing restarts it unless you pass `--restart`.
+
+| Flag | Effect |
+| ---- | ------ |
+| `--no-build` | use the existing binary (`$OXY_BIN`, else `target/debug/oxy`) |
+| `--no-seed` | skip `oxy seed` |
+| `--no-frontend` | API only |
+| `--restart` | restart the backend and Vite even when healthy (e.g. after editing `.env`) |
+| `--clean` | `oxy start --clean`: wipe the database volumes first |
+
+It needs a running Docker daemon and uses fixed ports, so it is one stack per machine (for
+side-by-side checkouts, see below). It refuses to start when a port it needs is held by a
+process it did not start, and prints that process. Every run writes fresh log files under
+`.oxy-dev/logs/`, and `.oxy-dev/state.json` records the URLs, pids, seeded workspaces and
+sign-in personas. To land signed in, open
+`http://127.0.0.1:5173/dev-login?as=member` (or `owner`, `staff`, `operator`, `partner`) —
+see **Dev sign-in** below. Coding agents: the `oxy-run-and-verify` skill
+(`.claude/skills/oxy-run-and-verify/SKILL.md`) is the full guide.
+
+### By hand
+
+There is no embedded database: `oxy serve` refuses to boot without `OXY_DATABASE_URL`.
+`oxy start` brings up Docker Postgres and then serves:
 
 ```bash
-pnpm run dev
+cargo run -p oxy-server -- start --enterprise     # Docker Postgres + API on :3000
+pnpm --dir web-app dev                            # Vite on http://127.0.0.1:5173
+
+# seed that database (idempotent)
+OXY_DATABASE_URL=postgresql://postgres:postgres@localhost:15432/oxy \
+  ./target/debug/oxy seed --workspace-path ./examples
 ```
 
-The API server will be available at `http://localhost:3000`.
-The frontend will be available at `http://localhost:5173`.
+Against a Postgres you run yourself, set `OXY_DATABASE_URL` and use
+`cargo run -p oxy-server -- serve --enterprise` instead.
 
 ## Running multiple instances side by side
 
@@ -350,11 +374,19 @@ Oxy uses PostgreSQL for data storage.
 
 ### Development Environment
 
-For local development, Oxy automatically starts an **embedded PostgreSQL instance**. No manual setup required!
+There is no embedded PostgreSQL. `oxy start` (and so `just up`) runs one in Docker, managed
+through `bollard` rather than docker-compose:
 
-The embedded PostgreSQL data is stored in: `~/.local/share/oxy/postgres_data/`
+| | |
+| - | - |
+| Container | `oxy-postgres` (image `postgres:18-alpine`) |
+| Address | `localhost:15432`, user `postgres`, password `postgres`, database `oxy` |
+| Data | the `oxy-postgres-data` volume — `oxy start --clean` / `just up --clean` wipes it |
 
-The location can be changed by setting the `OXY_STATE_DIR` environment variable.
+`oxy start` removes and recreates the container on every start (the volume survives), and
+sets `OXY_DATABASE_URL` for its own process only — a separate `oxy seed` or `oxy compile`
+needs it passed explicitly. Open a shell with
+`docker exec -it oxy-postgres psql -U postgres -d oxy`.
 
 ### Production/Custom PostgreSQL
 

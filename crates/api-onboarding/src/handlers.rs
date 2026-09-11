@@ -11,7 +11,7 @@ use oxy::service::retrieval::{ReindexInput, reindex};
 use oxy::service::secret_manager::SecretManagerService;
 use oxy_auth::extractor::AuthenticatedUserExtractor;
 use oxy_git::GitClient;
-use oxy_project::{copy_demo_files_to, write_minimal_config_yml};
+use oxy_project::copy_demo_files_to;
 use oxy_shared::errors::OxyError;
 use tracing::{error, info};
 use uuid::Uuid;
@@ -109,59 +109,41 @@ pub async fn setup_demo(
     }))
 }
 
-/// POST /orgs/{org_id}/onboarding/new — write a minimal config.yml to the workspace directory if none exists.
+/// POST /orgs/{org_id}/onboarding/new — create a Ready blank workspace (a minimal
+/// `config.yml`). The same implementation every new org's `Default` workspace
+/// comes from: `oxy_app`'s `workspace_provisioning::create_blank_workspace`.
 pub async fn setup_new(
     OrgAdmin(ctx): OrgAdmin,
     AuthenticatedUserExtractor(user): AuthenticatedUserExtractor,
     body: Option<Json<NewSetupRequest>>,
 ) -> Result<Json<OnboardingResult>, (StatusCode, String)> {
+    use oxy_app::server::service::workspace_provisioning::{
+        BlankWorkspace, WorkspaceName, create_blank_workspace,
+    };
+
     let req = body.map(|b| b.0).unwrap_or_default();
-
-    let workspace_id = Uuid::new_v4();
-    let project_dir = resolve_project_dir(workspace_id).map_err(|(status, msg)| {
-        error!("{}", msg);
-        (status, msg)
-    })?;
-
-    if !project_dir.join("config.yml").exists()
-        && let Err(e) = write_minimal_config_yml(&project_dir).await
-    {
-        error!("Failed to write config.yml: {}", e);
-        let _ = std::fs::remove_dir_all(&project_dir);
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to write config.yml: {e}"),
-        ));
-    }
-
-    let display_name = match req.name.as_deref() {
-        Some(n) => n.to_string(),
-        None => unique_display_name("New workspace", Some(ctx.org.id))
-            .await
-            .map_err(|(s, m)| {
-                error!("{}", m);
-                (s, m)
-            })?,
+    let name = match req.name.as_deref() {
+        Some(name) => WorkspaceName::Exact(name),
+        None => WorkspaceName::UniqueFrom("New workspace"),
     };
-    let workspace_id = match register_project(
-        &project_dir,
-        &display_name,
-        workspace_id,
-        Some(user.id),
-        Some(ctx.org.id),
-        entity::workspaces::WorkspaceStatus::Ready,
-        None,
-        None,
-    )
-    .await
-    {
-        Ok(id) => id,
-        Err((status, msg)) => {
+    let spec = BlankWorkspace {
+        org_id: ctx.org.id,
+        created_by: user.id,
+        name,
+    };
+    let db = oxy::database::client::establish_connection()
+        .await
+        .map_err(|e| {
+            let msg = format!("Database connection failed: {e}");
             error!("{}", msg);
-            let _ = std::fs::remove_dir_all(&project_dir);
-            return Err((status, msg));
-        }
-    };
+            (StatusCode::INTERNAL_SERVER_ERROR, msg)
+        })?;
+    // A plain connection autocommits, so the row is already durable here.
+    let staged = create_blank_workspace(&db, spec).await.map_err(|e| {
+        error!("{}", e);
+        <(StatusCode, String)>::from(e)
+    })?;
+    let workspace_id = staged.finish().await;
 
     Ok(Json(OnboardingResult {
         workspace_type: "new".to_string(),

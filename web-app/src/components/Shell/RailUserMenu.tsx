@@ -25,6 +25,11 @@ function OrgSwitcherGroup() {
   const navigate = useNavigate();
   const currentOrg = useCurrentOrg((s) => s.org);
   const { data: orgs } = useOrgs();
+  const { data: profile } = useCurrentUser();
+  // Orgs are provisioned, not self-served: only staff holding `create_orgs`
+  // (what `POST /admin/orgs` requires) get the entry, and it opens the admin
+  // tenant directory where that dialog lives.
+  const canCreateOrgs = !!profile?.platform_capabilities?.includes("create_orgs");
 
   return (
     <>
@@ -51,19 +56,21 @@ function OrgSwitcherGroup() {
             {currentOrg?.id === org.id && <Check className='h-4 w-4 text-primary' />}
           </DropdownMenuItem>
         ))}
-        <DropdownMenuItem
-          className='cursor-pointer'
-          onSelect={(e) => {
-            // preventDefault skips Radix's auto-close so the menu unmounts
-            // via the navigate instead — no leaking body pointer-events
-            // lock on the destination page.
-            e.preventDefault();
-            navigate(ROUTES.ONBOARDING);
-          }}
-        >
-          <Plus className='h-4 w-4' />
-          New organization
-        </DropdownMenuItem>
+        {canCreateOrgs && (
+          <DropdownMenuItem
+            className='cursor-pointer'
+            onSelect={(e) => {
+              // preventDefault skips Radix's auto-close so the menu unmounts
+              // via the navigate instead — no leaking body pointer-events
+              // lock on the destination page.
+              e.preventDefault();
+              navigate(`${ROUTES.ADMIN.TENANTS}?type=orgs`);
+            }}
+          >
+            <Plus className='h-4 w-4' />
+            New organization
+          </DropdownMenuItem>
+        )}
       </DropdownMenuGroup>
       <DropdownMenuSeparator />
     </>

@@ -9,16 +9,6 @@ export const useOrgs = () => {
   });
 };
 
-export const useCreateOrg = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (data: { name: string; slug: string }) => OrganizationService.createOrg(data),
-    onSuccess: () => {
-      queryClient.removeQueries({ queryKey: queryKeys.org.list() });
-    }
-  });
-};
-
 export const useUpdateOrg = () => {
   const queryClient = useQueryClient();
   return useMutation({

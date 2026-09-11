@@ -49,7 +49,7 @@ on:
           - ask-agent
           - threads
           - ide
-          - onboarding
+          - metric-tree
         default: all
       oxy_binary_run_id:
         description: Run id of an earlier CI workflow on this branch whose `oxy-binary-ci` artifact should be downloaded. Required for standalone runs.
@@ -108,8 +108,7 @@ jobs:
             {"name":"ask-agent","flows":"chat-ask.flow.test.yml chat-panel-agent-switch.flow.test.yml","mode":"local","port":3000},
             {"name":"threads","flows":"threads-list.flow.test.yml","mode":"local","port":3000},
             {"name":"ide","flows":"ide-save.flow.test.yml","mode":"local","port":3000},
-            {"name":"metric-tree","flows":"metric-tree.flow.test.yml metric-tree-scenario.flow.test.yml","mode":"local","port":3000},
-            {"name":"onboarding","flows":"onboarding-blank-workspace.flow.test.yml","mode":"cloud","port":3001}
+            {"name":"metric-tree","flows":"metric-tree.flow.test.yml metric-tree-scenario.flow.test.yml","mode":"local","port":3000}
           ]'
           if [ -z "$FLOW_BUCKET" ] || [ "$FLOW_BUCKET" = "all" ]; then
             FLOWS=$(echo "$ALL" | jq -c .)
@@ -203,8 +202,9 @@ jobs:
         if: matrix.flow.mode == 'cloud'
         run: |
           # Cloud mode boots without --local and without a workspace
-          # working directory; the flow creates orgs/workspaces at
-          # runtime via the auth-disabled internal port (3001).
+          # working directory, on the auth-disabled internal port (3001).
+          # No bucket uses it today: the one cloud flow walked self-serve
+          # org creation, which was removed (orgs are staff/partner-made).
           mkdir -p web-app/tests/agentic/.logs
           nohup oxy serve --enterprise > web-app/tests/agentic/.logs/backend.log 2>&1 &
           echo $! > /tmp/oxy-server.pid

@@ -71,7 +71,10 @@ export function handlePostLoginOrgs(user: UserInfo, orgs: OrgInfo[]): string {
   }
 
   if (orgs.length === 0) {
-    return ROUTES.ONBOARDING;
+    // Staff standing with no membership (an App Operator, a Global Admin before
+    // any tenant exists) is working in the admin console, not waiting on an
+    // invite. `/onboarding` stays reachable by URL for a staff invite.
+    return user.is_app_admin ? ROUTES.ADMIN.CUSTOMER_APPS : ROUTES.ONBOARDING;
   }
 
   return ROUTES.ROOT;

@@ -14,9 +14,8 @@
 # See `crates/agentic/builder/CLAUDE.md` for the pipeline shape.
 #
 # Scope is intentionally narrow: this flow tests **only** the builder
-# agent editing an existing app. The org → workspace → onboarding
-# preludes are covered separately by `onboarding-blank-workspace.flow.
-# test.yml`. We run in local mode against `demo_project/insights.app.yml`
+# agent editing an existing app, with no org → workspace prelude.
+# We run in local mode against `demo_project/insights.app.yml`
 # (Oxymart retail-analytics dashboard, store + start_date controls,
 # bar/pie charts) — the auth-disabled public port (3000) of
 # `oxy start --local --enterprise`.

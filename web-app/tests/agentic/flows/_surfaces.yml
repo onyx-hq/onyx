@@ -36,15 +36,6 @@
   flows:
     - builder-edits-app
 
-- surface: onboarding
-  paths:
-    - "src/pages/onboarding/"
-    - "src/components/workspaces/components/CreateWorkspaceDialog/"
-    - "src/components/workspaces/components/WorkspaceCreator"
-    - "src/components/org/CreateOrgDialog"
-  flows:
-    - onboarding-blank-workspace
-
 - surface: threads
   paths:
     - "src/pages/threads/"

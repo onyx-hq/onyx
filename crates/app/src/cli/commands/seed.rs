@@ -11,6 +11,10 @@
 //!   Owner of Local org, so OAuth login (GitHub / Google) lands in a
 //!   workspace already without the user clicking through a setup wizard.
 //!
+//! Then, from the CLI ([`SeedOptions`]): LLM provider keys from the environment
+//! become workspace secrets (`seed_llm_keys`), and every seeded workspace is
+//! compiled + promoted (`seed_compile`) so it serves on the first request.
+//!
 //! Idempotent — safe to re-run. Already-bound emails are skipped.
 
 use std::path::PathBuf;
@@ -39,19 +43,97 @@ fn demo_workspace_id() -> Uuid {
     Uuid::new_v5(&Uuid::NAMESPACE_DNS, b"demo.oxy.local")
 }
 
+/// What `oxy seed` does beyond writing rows. The CLI compiles by default and
+/// copies keys only under `--llm-keys`; the integration-test fixture
+/// ([`seed_demo`]) leaves both off — a test wants rows, not ten compiles and a
+/// copy of whatever keys its shell exports.
+#[derive(Clone, Copy, Debug)]
+pub struct SeedOptions {
+    /// Compile + promote every seeded workspace. `--no-compile` clears it.
+    pub compile: bool,
+    /// Copy the LLM keys each workspace's `config.yml` references from the
+    /// environment into its secrets store (`--llm-keys`; local DB only, never
+    /// overwriting).
+    pub llm_keys: bool,
+}
+
+/// Seed rows only — the fixture integration tests drive. See [`seed_demo_with`].
+pub async fn seed_demo(workspace_path: Option<PathBuf>) -> Result<(), OxyError> {
+    let rows_only = SeedOptions {
+        compile: false,
+        llm_keys: false,
+    };
+    seed_demo_with(workspace_path, rows_only).await
+}
+
 /// Run the full demo seed. `workspace_path` defaults to `./examples`.
 ///
-/// Also binds every email in `OXY_GLOBAL_ADMINS` as Owner of the Local org so
-/// OAuth login (GitHub / Google) lands in a workspace already. Skips emails
-/// already bound, and skips the binding entirely when that env var is unset —
-/// the guest user still gets seeded so the workspace is usable from a fresh
-/// login. A `.env` carrying only the removed `OXY_APP_ADMINS` gets an error
-/// logged rather than binding nobody in silence.
-pub async fn seed_demo(workspace_path: Option<PathBuf>) -> Result<(), OxyError> {
+/// A compile failure is returned only after everything else — rows, keys, the
+/// other workspaces' compiles — has run, so a wrapper script fails visibly
+/// without a single bad file leaving the box half-seeded.
+pub async fn seed_demo_with(
+    workspace_path: Option<PathBuf>,
+    options: SeedOptions,
+) -> Result<(), OxyError> {
     let resolved = resolve_workspace_path(workspace_path)?;
     let resolved_str = resolved.to_string_lossy().to_string();
     let workspace_id = demo_workspace_id();
+    let conn = seed_rows(workspace_id, &resolved_str).await?;
 
+    let mut compiled = Ok(());
+    if options.compile || options.llm_keys {
+        let targets = super::seed_compile::seeded_workspaces(&conn, workspace_id).await?;
+        // Warns instead of failing: chat without a key is a clear, fixable error
+        // in the product, and the rest of the seed is what a developer needs.
+        if options.llm_keys
+            && let Err(e) = super::seed_llm_keys::store_llm_keys(&conn, &targets).await
+        {
+            println!("{} LLM keys not stored: {e}", "⚠️".warning());
+        }
+        if options.compile {
+            compiled = super::seed_compile::compile_seeded(&targets).await;
+        }
+    }
+
+    print_next_steps(options.compile, workspace_id, &resolved_str);
+    compiled
+}
+
+fn print_next_steps(compiled: bool, workspace_id: Uuid, path: &str) {
+    println!();
+    println!("Next:");
+    if !compiled {
+        println!(
+            "  cargo run -p oxy-server -- compile --workspace-path {path} \
+             --workspace-id {workspace_id} --promote --skip-migrations"
+        );
+    }
+    println!("  OXY_ROLE=ide cargo run -p oxy-server -- serve --enterprise");
+    println!(
+        "  http://localhost:5173/dev-login?as=member   (staff | owner | member | operator | partner)"
+    );
+}
+
+/// The personas `/api/auth/dev-login?as=` names, derived from what this seed
+/// creates. `staff` is absent: it is the operator's own roster, not seed data.
+#[cfg(test)]
+pub(crate) fn seeded_persona_emails() -> Vec<(&'static str, String)> {
+    let mut personas = super::seed_partners::acme_persona_emails();
+    let operator = super::seed_platform_grants::unscoped_app_operator_email()
+        .expect("the seed grants an unscoped App Operator");
+    personas.push(("operator", operator.to_string()));
+    personas
+}
+
+/// Every row the seed owns: the Local org + demo workspace, `OXY_GLOBAL_ADMINS`
+/// bound as Owners of Local (so OAuth login lands in a workspace already; skipped
+/// when unset, and a `.env` carrying only the removed `OXY_APP_ADMINS` gets an
+/// error logged rather than binding nobody in silence), the tenant/partner orgs,
+/// platform grants, example apps and demo threads.
+async fn seed_rows(
+    workspace_id: Uuid,
+    resolved_str: &str,
+) -> Result<sea_orm::DatabaseConnection, OxyError> {
     println!(
         "{} seeding demo (workspace_id={}, path={})",
         "🌱".info(),
@@ -61,7 +143,7 @@ pub async fn seed_demo(workspace_path: Option<PathBuf>) -> Result<(), OxyError> 
 
     let conn = establish_connection().await?;
     ensure_local_org(&conn).await?;
-    ensure_demo_workspace(&conn, workspace_id, &resolved_str).await?;
+    ensure_demo_workspace(&conn, workspace_id, resolved_str).await?;
 
     println!(
         "{} workspace {} → {}",
@@ -77,13 +159,13 @@ pub async fn seed_demo(workspace_path: Option<PathBuf>) -> Result<(), OxyError> 
     // realistic data out of the box — no separate `--partners` step. Each seeded
     // workspace points at the demo project (`resolved_str`). Skips on a non-local
     // DB, so this stays safe to run anywhere the demo-workspace seed runs.
-    super::seed_partners::seed_partner_tenants(&resolved_str).await?;
+    super::seed_partners::seed_partner_tenants(resolved_str).await?;
 
     // After the tenants (the Acme-scoped grant needs Acme to exist) and before the
     // apps summary, so the output reads: tenants → staff → what they can see.
     super::seed_platform_grants::seed_platform_grants().await?;
 
-    deploy_example_apps(&conn, workspace_id, &resolved_str).await;
+    deploy_example_apps(&conn, workspace_id, resolved_str).await;
 
     // After `bind_org_admin_emails`: threads are user-scoped, and this
     // materializes one copy per Local-org member — the memberships that call
@@ -94,12 +176,7 @@ pub async fn seed_demo(workspace_path: Option<PathBuf>) -> Result<(), OxyError> 
     if let Err(e) = super::seed_threads::seed_demo_threads(&conn, workspace_id).await {
         println!("{} demo threads not seeded: {e}", "⚠️".warning());
     }
-
-    println!();
-    println!("Next:");
-    println!("  cargo run -p oxy-server -- compile --workspace-path {resolved_str}");
-    println!("  OXY_ROLE=ide cargo run -p oxy-server -- serve --enterprise");
-    Ok(())
+    Ok(conn)
 }
 
 /// Deploy the example custom app to the demo workspace, and to Acme's (so the

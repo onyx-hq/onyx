@@ -67,8 +67,7 @@ GET|POST /auth/dev-login          (404s unless OXY_DEV_LOGIN_EMAILS is set)
 
 ```
 GET    /logout
-GET    /orgs
-POST   /orgs
+GET    /orgs                                  (no POST: staff/partners create orgs)
 POST   /invitations/{token}/accept
 
 /orgs/{org_id}/                              (org_middleware)

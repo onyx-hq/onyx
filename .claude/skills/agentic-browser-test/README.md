@@ -55,8 +55,8 @@ and you say something like:
    - `backend_mode:` — local (default, port 3000) or cloud (port 3001).
    - `setup:` — the 3 documented fixture commands
      (`reset_test_file`, `restore_demo_file:<rel>`, `goto:<path>`).
-     None can make a network call; cloud-mode flows drive
-     onboarding through the UI wizard.
+     None can make a network call; data a cloud-mode flow reads (an
+     org — no UI creates one any more) is `oxy seed`ed beforehand.
    - `act:` — natural-language steps with explicit `[data-testid=…]`
      selectors when they exist (drops cold cost ~5×).
    - `wait_for:` — `streaming_complete` / `network_idle` /
@@ -110,7 +110,7 @@ buckets**, not one job per flow:
 | `ask-agent` | `chat-ask`, `chat-panel-agent-switch` | local |
 | `threads` | `threads-list` | local |
 | `ide` | `ide-save` | local |
-| `onboarding` | `onboarding-blank-workspace` | cloud |
+| `metric-tree` | `metric-tree`, `metric-tree-scenario` | local |
 
 Filename → bucket mapping for new flows:
 
@@ -119,7 +119,7 @@ Filename → bucket mapping for new flows:
 - `chat-*` → `ask-agent`
 - `threads-*` → `threads`
 - `ide-*` → `ide`
-- `onboarding-*` → `onboarding`
+- `metric-tree-*` → `metric-tree`
 
 A flow that doesn't match any prefix needs a new bucket entry in the
 `resolve-matrix` job's inline JSON in `agentic-tests.yaml`. The skill
@@ -181,10 +181,9 @@ that:
 
 - [`SKILL.md`](SKILL.md) — full instructions Claude follows when handling
   any of the four modes.
-- [`EXAMPLES.md`](EXAMPLES.md) — six worked examples covering the
+- [`EXAMPLES.md`](EXAMPLES.md) — five worked examples covering the
   surfaces / patterns that ship in CI today (chat-ask shared prelude,
-  ide-save Monaco quirk, onboarding-blank-workspace cloud-mode upload,
-  builder-edits-app compound act, threads-list shared prelude, regression
+  ide-save Monaco quirk, builder-edits-app compound act, threads-list shared prelude, regression
   pattern).
 - [`CHEATSHEET.md`](CHEATSHEET.md) — for devs authoring flows by hand:
   schema reference, full CLI surface, action-cache contract,

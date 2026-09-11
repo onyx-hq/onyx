@@ -292,9 +292,17 @@ pub(crate) fn is_local_db() -> bool {
 }
 
 fn is_local() -> bool {
-    if std::env::var("OXY_SEED_ALLOW_REMOTE").is_ok() {
-        return true;
-    }
+    remote_seeding_allowed() || database_url_looks_local()
+}
+
+/// `OXY_SEED_ALLOW_REMOTE` — consent to fabricated demo rows on a database that
+/// doesn't look local. It covers rows, not credentials: see `seed_llm_keys`.
+pub(crate) fn remote_seeding_allowed() -> bool {
+    std::env::var("OXY_SEED_ALLOW_REMOTE").is_ok()
+}
+
+/// `OXY_DATABASE_URL` alone looks local, with no escape hatch consulted.
+pub(crate) fn database_url_looks_local() -> bool {
     let url = std::env::var("OXY_DATABASE_URL").unwrap_or_default();
     url.is_empty()
         || url.contains("localhost")
@@ -462,6 +470,50 @@ pub fn seeded_workspace_id(org_slug: &str, org_id: Uuid) -> Option<Uuid> {
 /// `seeded_workspace_id` exists to retire.
 fn workspace_seed_id(org_id: Uuid, name: &str) -> Uuid {
     seed_id("workspace", &format!("{org_id}:{name}"))
+}
+
+/// Every workspace this seed creates, as (`<org> / <name>`, id), for orgs that
+/// exist — what `oxy seed` compiles and stores LLM keys on. Empty on a non-local
+/// DB, matching the skip in [`seed_partner_tenants`].
+pub(crate) async fn seeded_workspace_ids(conn: &Conn) -> Result<Vec<(String, Uuid)>, OxyError> {
+    if !is_local() {
+        return Ok(Vec::new());
+    }
+    let mut ids = Vec::new();
+    for org in ORGS {
+        let Some(org_id) = find_org_id(conn, org.slug).await? else {
+            continue;
+        };
+        for name in org.workspaces {
+            ids.push((
+                format!("{} / {name}", org.slug),
+                workspace_seed_id(org_id, name),
+            ));
+        }
+    }
+    Ok(ids)
+}
+
+/// The Acme people `/api/auth/dev-login?as=` names, derived from the topology
+/// above rather than restated: `owner` is person 0; `partner` is the first
+/// non-owner holding a partner binding; `member` is the first member holding
+/// none. The dev-login persona table is compiled in and pinned against this.
+#[cfg(test)]
+pub(crate) fn acme_persona_emails() -> Vec<(&'static str, String)> {
+    let acme = ORGS.iter().find(|o| o.slug == "acme").expect("acme seeded");
+    let partner = PARTNERS
+        .iter()
+        .find(|p| p.org_slug == "acme")
+        .expect("acme is a partner");
+    let operator = (1..partner.operators).next().unwrap_or(0);
+    let plain_member = (partner.operators.max(1)..=acme.members)
+        .next()
+        .expect("acme leaves a member without partner access");
+    vec![
+        ("owner", person(0, "acme").email),
+        ("partner", person(operator, "acme").email),
+        ("member", person(plain_member, "acme").email),
+    ]
 }
 
 /// The team an org's example app is restricted to, if the seed defines one.

@@ -2,16 +2,12 @@ use axum::extract::Json;
 use axum::http::StatusCode;
 use chrono::Utc;
 use entity::org_members;
-use entity::org_members::OrgRole;
 use entity::organizations;
 use entity::prelude::*;
 use entity::workspaces;
 use oxy::database::client::establish_connection;
 use oxy_auth::extractor::AuthenticatedUserExtractor;
-use sea_orm::{
-    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, QuerySelect,
-    TransactionTrait,
-};
+use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, QuerySelect};
 use uuid::Uuid;
 
 use crate::server::api::middlewares::org_context::OrgContextExtractor;
@@ -21,110 +17,11 @@ use super::dto::*;
 use super::ops::*;
 
 // Organization CRUD
-
-/// POST /orgs
-pub async fn create_org(
-    AuthenticatedUserExtractor(user): AuthenticatedUserExtractor,
-    Json(req): Json<CreateOrgRequest>,
-) -> Result<Json<OrgResponse>, StatusCode> {
-    let db = establish_connection().await.map_err(|e| {
-        tracing::error!("DB connection error: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    let slug = slugify_name(&req.slug);
-    if slug.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    if is_reserved_slug(&slug) {
-        // Not a collision — the resource doesn't exist, the name is forbidden
-        // because it would shadow a top-level frontend route. 422 lets the
-        // client distinguish this from a real slug-taken case.
-        return Err(StatusCode::UNPROCESSABLE_ENTITY);
-    }
-
-    let txn = db.begin().await.map_err(|e| {
-        tracing::error!("Failed to begin transaction: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    // Best-effort slug uniqueness check. The DB UNIQUE constraint is the real
-    // guard against races; this SELECT is an early-exit optimisation only.
-    let existing = Organizations::find()
-        .filter(organizations::Column::Slug.eq(&slug))
-        .one(&txn)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to check slug uniqueness: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    if existing.is_some() {
-        return Err(StatusCode::CONFLICT);
-    }
-
-    let now = Utc::now().fixed_offset();
-    let org_id = Uuid::new_v4();
-
-    let org = organizations::ActiveModel {
-        id: ActiveValue::Set(org_id),
-        name: ActiveValue::Set(req.name),
-        slug: ActiveValue::Set(slug),
-        logo: ActiveValue::NotSet,
-        logo_content_type: ActiveValue::NotSet,
-        created_at: ActiveValue::Set(now),
-        updated_at: ActiveValue::Set(now),
-    };
-    let org = org.insert(&txn).await.map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("unique") || msg.contains("duplicate") {
-            tracing::warn!("Slug uniqueness conflict on insert (caught at DB level): {e}");
-            return StatusCode::CONFLICT;
-        }
-        tracing::error!("Failed to insert organization: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    // Add the creator as owner.
-    let member = org_members::ActiveModel {
-        id: ActiveValue::Set(Uuid::new_v4()),
-        org_id: ActiveValue::Set(org_id),
-        user_id: ActiveValue::Set(user.id),
-        role: ActiveValue::Set(OrgRole::Owner),
-        created_at: ActiveValue::Set(now),
-        updated_at: ActiveValue::Set(now),
-    };
-    member.insert(&txn).await.map_err(|e| {
-        tracing::error!("Failed to insert org member: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    // Eager-insert the org_billing row so the SubscriptionGuard always finds
-    // it. Status starts as `incomplete` — admin runs `provision_subscription`
-    // after the sales call to flip it Active.
-    let billing = entity::org_billing::ActiveModel {
-        id: ActiveValue::Set(Uuid::new_v4()),
-        org_id: ActiveValue::Set(org_id),
-        status: ActiveValue::Set(entity::org_billing::BillingStatus::Incomplete),
-        seats_paid: ActiveValue::Set(0),
-        created_at: ActiveValue::Set(now),
-        updated_at: ActiveValue::Set(now),
-        ..Default::default()
-    };
-    billing.insert(&txn).await.map_err(|e| {
-        tracing::error!("Failed to insert org_billing row: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    txn.commit().await.map_err(|e| {
-        tracing::error!("Failed to commit transaction: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    // Airhouse provisioning is explicit only — the user triggers it from the
-    // Settings → Airhouse page via POST /api/airhouse/me/provision.
-
-    Ok(Json(org_response(&org, &OrgRole::Owner)))
-}
+//
+// There is no `POST /orgs`. Customers do not create organizations: Oxy staff
+// onboard them through `POST /admin/orgs` and partners through
+// `POST /partners/{id}/orgs`, and each org arrives with a Ready `Default`
+// workspace so its owner's first sign-in lands on Home.
 
 /// GET /orgs
 /// Every organization the caller can reach.
@@ -271,8 +168,8 @@ pub async fn update_org(
             return Err(StatusCode::BAD_REQUEST);
         }
         if is_reserved_slug(&normalized) {
-            // See create_org — 422 distinguishes "forbidden name" from a real
-            // slug-already-taken collision.
+            // 422 distinguishes "forbidden name" (it would shadow a top-level
+            // frontend route) from a real slug-already-taken collision.
             return Err(StatusCode::UNPROCESSABLE_ENTITY);
         }
         active.slug = ActiveValue::Set(normalized);

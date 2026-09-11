@@ -958,11 +958,17 @@ else
   # disposable org -> workspace -> (rename) -> delete: the one full Destr
   # lifecycle this pass covers, entirely on throwaway resources, never the
   # shared "local"/"acme" orgs or the shared Demo workspace.
+  #
+  # Staff-only create (`POST /orgs` is gone): needs `create_orgs`, which
+  # $DEV_EMAIL holds as Global Owner/Admin. `owner_email` is the caller, an
+  # existing user, so it is seeded Owner at once — the org routes below then
+  # answer as a member, not `assume_role_required`. IdeOnly (it scaffolds the
+  # org's Default workspace); S1 self-proxies it to the ide.
   out=$(mktemp)
-  c=$(req POST "${S1_BASE}/api/orgs" "$out" "$(printf '{"name":"fleet-assert-scratch-org-%s","slug":"fleet-assert-scratch-org-%s"}' "$ts" "$ts")")
+  c=$(req POST "${S1_BASE}/api/admin/orgs" "$out" "$(printf '{"name":"fleet-assert-scratch-org-%s","slug":"fleet-assert-scratch-org-%s","owner_email":"%s"}' "$ts" "$ts" "$DEV_EMAIL")")
   if [ "$c" = "200" ] || [ "$c" = "201" ]; then
-    DISPOSABLE_ORG_ID=$(jq -r '.id // empty' "$out")
-    ok "created disposable org $DISPOSABLE_ORG_ID"
+    DISPOSABLE_ORG_ID=$(jq -r '.org.id // empty' "$out")
+    ok "created disposable org $DISPOSABLE_ORG_ID (default workspace $(jq -r '.default_workspace_id // "?"' "$out"))"
     CLEANUP_CMDS+=("DELETE|${S1_BASE}/api/orgs/${DISPOSABLE_ORG_ID}")
 
     out2=$(mktemp)

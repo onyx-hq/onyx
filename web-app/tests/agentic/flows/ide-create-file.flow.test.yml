@@ -78,7 +78,7 @@
 # IS the ide). Driven against this session's fleet only because that is the
 # backend available here; nothing about the assertions is fleet-specific.
 #
-# NON-IDEMPOTENT BY DESIGN, LIKE `onboarding-blank-workspace` — READ BEFORE
+# NON-IDEMPOTENT BY DESIGN — READ BEFORE
 # RERUNNING. This flow creates a real file, `agentic-test-scratch.md`, at
 # the workspace root. Unlike `builder-edits-app`
 # (`restore_demo_file:insights.app.yml`) there is no setup command that can
@@ -88,8 +88,8 @@
 # reachable UI path to Delete either. A second run WILL correctly fail at
 # `NewNode`'s existence check ("A file with this name already exists",
 # NewNode.tsx:108-112) unless `agentic-test-scratch.md` is removed out of
-# band first — the same shape of limitation `onboarding-blank-workspace`
-# has with Postgres state, solved there by `--clean` on respawn
+# band first — the same shape of limitation a cloud-mode flow has with
+# Postgres state, solved there by `--clean` on respawn
 # (tests/agentic/README.md's cloud-mode section). There is no in-suite
 # equivalent for a single workspace's file tree today. This session
 # verified the flow with a live run and then removed the created file via

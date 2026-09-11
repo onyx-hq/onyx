@@ -87,6 +87,8 @@ oxy/**/poetry.lock
 # Oxy
 .db-*/
 .fastembed_cache/
+# `just up` pids, logs and state.json
+.oxy-dev/
 # Dev env files may carry OXY_OWNER/OXY_GLOBAL_ADMINS allow-lists — keep off the public mirror.
 # The two dev-stack files below are tracked (private repo only); copybara push_exclude in
 # opensource.yaml keeps them off the public oxy-hq/oxygen mirror.

@@ -12,9 +12,9 @@
 //!
 //! 1. **Off unless an allow-list resolves.** `OXY_DEV_LOGIN_EMAILS` supplies
 //!    one in any build; in a **debug build only**, leaving it unset falls back
-//!    to `OXY_GLOBAL_ADMINS`, so a dev box needs no configuration at all.
-//!    Disabled, every verb 404s — a deployment that never sets the var does
-//!    not advertise the route.
+//!    to `OXY_GLOBAL_ADMINS` plus the seeded [`personas`], so a dev box needs
+//!    no configuration at all. Disabled, every verb 404s — a deployment that
+//!    never sets the var does not advertise the route.
 //!
 //!    Two guards make that fallback safe, along different axes:
 //!
@@ -36,9 +36,11 @@
 //!    The distinction throughout is *deliberateness*: an operator who typed a
 //!    list of identities gets what they asked for; an inferred list never
 //!    leaves the machine that inferred it.
-//! 2. **Only pre-declared identities.** The caller may name an email, but it
-//!    must already be in the allow-list; an unlisted address is a 403. So the
-//!    worst a caller can do is become an identity the operator chose.
+//! 2. **Only pre-declared identities.** The caller may name an email, or a
+//!    persona (`as=member`) that resolves to one, but the address must already
+//!    be in the allow-list; an unlisted address is a 403. So the worst a caller
+//!    can do is become an identity the operator — or the inferred fallback,
+//!    under both guards above — chose.
 //! 3. **Loud.** Enabling it prints a warning at startup and logs a `warn!` on
 //!    every issued session.
 //! 4. **No drive-by sign-in.** Only `POST` sets the `SameSite=Lax` session
@@ -56,6 +58,12 @@
 //! gate would make the documented workflow 404 with no explanation on exactly
 //! those setups. The runtime gate is one deliberate env var either way.
 
+mod account;
+mod peer;
+mod personas;
+#[cfg(test)]
+mod tests;
+
 use std::net::SocketAddr;
 use std::sync::LazyLock;
 
@@ -64,16 +72,14 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::Json,
 };
-use entity::{prelude::Users, users, users::UserStatus};
-use sea_orm::{ActiveValue, EntityTrait, Set};
-use uuid::Uuid;
 
-use oxy::database::{client::establish_connection, filters::UserQueryFilterExt};
+pub use peer::PeerAddr;
+
+use oxy::database::client::establish_connection;
 
 use super::dto::{AuthResponse, DevLoginRequest};
-use super::ops::{
-    finalize_login, insert_user_or_fetch_existing, is_valid_email_format, login_response,
-};
+use super::ops::{finalize_login, is_valid_email_format, login_response};
+use personas::{DevLoginRefusal, Target};
 
 /// Comma-separated allow-list of sign-in identities. Setting it is what turns
 /// the endpoint on; leaving it unset is what keeps it off everywhere else.
@@ -90,7 +96,7 @@ pub(crate) const GLOBAL_ADMINS_ENV: &str = "OXY_GLOBAL_ADMINS";
 pub(crate) enum DevLoginSource {
     /// `OXY_DEV_LOGIN_EMAILS` — an explicit opt-in, honored in every build.
     Explicit,
-    /// `OXY_GLOBAL_ADMINS`, debug builds only.
+    /// `OXY_GLOBAL_ADMINS` plus the seeded personas, debug builds only.
     GlobalAdmins,
 }
 
@@ -128,6 +134,9 @@ impl DevLoginSource {
 struct DevLoginConfig {
     emails: Vec<String>,
     source: Option<DevLoginSource>,
+    /// Parsed `OXY_GLOBAL_ADMINS` — what `as=staff` names. Empty on a release
+    /// build, which never reads the roster for anything.
+    roster: Vec<String>,
 }
 
 /// Parsed once per process, which matches the "set it and restart" contract the
@@ -135,17 +144,41 @@ struct DevLoginConfig {
 /// warning on every `GET /auth/config` — which every client hits on boot — so a
 /// single typo would become permanent log noise.
 static DEV_LOGIN: LazyLock<DevLoginConfig> = LazyLock::new(|| {
-    let (raw, source) = resolve_source(
+    build_config(
         std::env::var(DEV_LOGIN_EMAILS_ENV).ok(),
         std::env::var(GLOBAL_ADMINS_ENV).ok(),
         cfg!(debug_assertions),
-    );
-    let emails = parse_dev_login_emails(raw.as_deref(), source);
+    )
+});
+
+/// The whole config from the raw env values, with the build injected for the
+/// same testability reason as [`resolve_source`].
+///
+/// The inferred list is `OXY_GLOBAL_ADMINS ∪ personas`: personas widen a list
+/// the fallback already produced, under the same two guards, and never conjure
+/// one — no usable roster (unset, or every entry malformed), no fallback. A
+/// typed list is exactly what was typed.
+fn build_config(
+    explicit: Option<String>,
+    global_admins: Option<String>,
+    debug_build: bool,
+) -> DevLoginConfig {
+    let roster = if debug_build {
+        parse_dev_login_emails(global_admins.as_deref(), Some(DevLoginSource::GlobalAdmins))
+    } else {
+        Vec::new()
+    };
+    let (raw, source) = resolve_source(explicit, global_admins, debug_build);
+    let emails = match source {
+        Some(DevLoginSource::GlobalAdmins) => personas::inferred_allow_list(&roster),
+        _ => parse_dev_login_emails(raw.as_deref(), source),
+    };
     DevLoginConfig {
         source: source.filter(|_| !emails.is_empty()),
         emails,
+        roster,
     }
-});
+}
 
 /// Which variable the allow-list came from, in order:
 ///
@@ -179,48 +212,6 @@ fn resolve_source(
     }
 }
 
-/// Loopback in the sense that matters: an IPv4-mapped `::ffff:127.0.0.1` is the
-/// same machine as `127.0.0.1`, but `Ipv6Addr::is_loopback` alone says no.
-fn is_loopback_peer(peer: SocketAddr) -> bool {
-    peer.ip().to_canonical().is_loopback()
-}
-
-/// The peer address **when the listener supplied one**.
-///
-/// `ConnectInfo<SocketAddr>` is a mandatory extractor — axum 0.8 gives it no
-/// optional impl — so a handler taking it directly returns a bare 500 on any
-/// listener served without `into_make_service_with_connect_info`, and on any
-/// router-level test that drives the service directly. The internal port was
-/// exactly that listener. This extractor never rejects, so the handler decides
-/// what an unknown peer means instead of the request dying with no explanation.
-///
-/// Unknown is treated as **not** loopback everywhere it's consulted: the only
-/// thing loopback grants is the un-typed roster fallback, so failing closed
-/// costs an explicit `OXY_DEV_LOGIN_EMAILS` and nothing else.
-pub struct PeerAddr(pub Option<SocketAddr>);
-
-impl PeerAddr {
-    fn is_loopback(&self) -> bool {
-        self.0.is_some_and(is_loopback_peer)
-    }
-}
-
-impl<S: Send + Sync> axum::extract::FromRequestParts<S> for PeerAddr {
-    type Rejection = std::convert::Infallible;
-
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        Ok(Self(
-            parts
-                .extensions
-                .get::<extract::ConnectInfo<SocketAddr>>()
-                .map(|extract::ConnectInfo(peer)| *peer),
-        ))
-    }
-}
-
 /// Whether the bypass is reachable *for this caller* — what `GET /auth/config`
 /// must report, rather than the process-wide [`is_dev_login_enabled`].
 ///
@@ -234,15 +225,7 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for PeerAddr {
 /// there is a bypass here worth probing — and would render a Dev sign-in button
 /// that can only 404 for them.
 pub(crate) fn dev_login_reachable_by(peer: Option<SocketAddr>) -> bool {
-    reachable(is_dev_login_enabled(), dev_login_is_loopback_only(), peer)
-}
-
-/// The decision itself, with the process-wide statics injected — same shape as
-/// [`resolve_source`]'s `debug_build` parameter, and for the same reason: a
-/// test that re-implements the expression cannot fail when the expression
-/// changes.
-fn reachable(enabled: bool, loopback_only: bool, peer: Option<SocketAddr>) -> bool {
-    enabled && (!loopback_only || peer.is_some_and(is_loopback_peer))
+    peer::reachable(is_dev_login_enabled(), dev_login_is_loopback_only(), peer)
 }
 
 /// The configured identities, normalized and validated. Empty ⇒ disabled.
@@ -308,9 +291,9 @@ fn resolve_dev_login_email(allowed: &[String], requested: Option<&str>) -> Optio
     }
 }
 
-/// The whole gate, decided before any database work: `404` when the bypass is
-/// off *or* when an un-typed roster fallback is reached from off-box, `403`
-/// when the caller named an address the operator did not declare.
+/// `404` when the bypass is off *or* when an un-typed roster fallback is reached
+/// from off-box — decided before anything else, so no later refusal (a `400`
+/// naming the valid personas, say) can tell an unserved caller the route exists.
 ///
 /// The off-box case is a `404`, not a `403`, for the same reason "disabled" is:
 /// from that peer's side the endpoint simply does not exist, and saying
@@ -321,12 +304,11 @@ fn resolve_dev_login_email(allowed: &[String], requested: Option<&str>) -> Optio
 /// supported dev flow puts a proxy in front of `serve`, and release builds
 /// never reach the fallback at all — but do not extend this check to trust a
 /// forwarded-for header, which is caller-controlled.
-fn resolve_or_refuse(
+fn gate(
     allowed: &[String],
-    requested: Option<&str>,
     source: Option<DevLoginSource>,
     peer_is_loopback: bool,
-) -> Result<String, StatusCode> {
+) -> Result<(), StatusCode> {
     if allowed.is_empty() {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -339,6 +321,18 @@ fn resolve_or_refuse(
         );
         return Err(StatusCode::NOT_FOUND);
     }
+    Ok(())
+}
+
+/// The [`gate`], then `403` when the caller named an address the operator did
+/// not declare.
+fn resolve_or_refuse(
+    allowed: &[String],
+    requested: Option<&str>,
+    source: Option<DevLoginSource>,
+    peer_is_loopback: bool,
+) -> Result<String, StatusCode> {
+    gate(allowed, source, peer_is_loopback)?;
     resolve_dev_login_email(allowed, requested).ok_or_else(|| {
         tracing::warn!(
             "dev-login: refused {:?} — not in {}",
@@ -347,6 +341,27 @@ fn resolve_or_refuse(
         );
         StatusCode::FORBIDDEN
     })
+}
+
+/// Everything decided before any database work, in the order that keeps the
+/// route invisible to callers it does not serve: `404` (the gate), then `400`
+/// (both `email` and `as`, or an unknown persona), then `409` (`as=staff` with
+/// no roster), then `403` (not on the allow-list).
+fn resolve_request<'a>(
+    config: &DevLoginConfig,
+    req: &'a DevLoginRequest,
+    peer_is_loopback: bool,
+) -> Result<(Target<'a>, String), DevLoginRefusal> {
+    gate(&config.emails, config.source, peer_is_loopback)?;
+    let target = personas::parse_target(req.email.as_deref(), req.persona.as_deref())?;
+    let requested = target.requested_email(&config.roster)?;
+    let email = resolve_or_refuse(
+        &config.emails,
+        requested.as_deref(),
+        config.source,
+        peer_is_loopback,
+    )?;
+    Ok((target, email))
 }
 
 /// How the minted session is handed back.
@@ -364,92 +379,42 @@ enum SessionDelivery {
     BodyOnly,
 }
 
-/// `POST /auth/dev-login` — body `{"email": "..."}` (or `{}` for the first
-/// configured identity). Used by the web-app's `/dev-login` page; sets the
-/// session cookie.
+/// `POST /auth/dev-login` — body `{"email": "..."}`, `{"as": "member"}`, or `{}`
+/// for the first configured identity. Used by the web-app's `/dev-login` page;
+/// sets the session cookie.
 pub async fn dev_login(
     peer: PeerAddr,
     headers: HeaderMap,
     extract::Json(req): extract::Json<DevLoginRequest>,
-) -> Result<(HeaderMap, Json<AuthResponse>), StatusCode> {
-    issue_dev_session(
-        &headers,
-        req.email.as_deref(),
-        SessionDelivery::CookieAndBody,
-        peer,
-    )
-    .await
+) -> Result<(HeaderMap, Json<AuthResponse>), DevLoginRefusal> {
+    issue_dev_session(&headers, &req, SessionDelivery::CookieAndBody, peer).await
 }
 
-/// `GET /auth/dev-login?email=...` — the token in the body, for tools that
-/// would rather `curl` than run JavaScript. No `Set-Cookie`; see
+/// `GET /auth/dev-login?email=...` (or `?as=<persona>`) — the token in the body,
+/// for tools that would rather `curl` than run JavaScript. No `Set-Cookie`; see
 /// [`SessionDelivery`].
 pub async fn dev_login_get(
     peer: PeerAddr,
     headers: HeaderMap,
     extract::Query(req): extract::Query<DevLoginRequest>,
-) -> Result<(HeaderMap, Json<AuthResponse>), StatusCode> {
-    issue_dev_session(
-        &headers,
-        req.email.as_deref(),
-        SessionDelivery::BodyOnly,
-        peer,
-    )
-    .await
+) -> Result<(HeaderMap, Json<AuthResponse>), DevLoginRefusal> {
+    issue_dev_session(&headers, &req, SessionDelivery::BodyOnly, peer).await
 }
 
 async fn issue_dev_session(
     headers: &HeaderMap,
-    requested: Option<&str>,
+    req: &DevLoginRequest,
     delivery: SessionDelivery,
     peer: PeerAddr,
-) -> Result<(HeaderMap, Json<AuthResponse>), StatusCode> {
-    let email = resolve_or_refuse(
-        dev_login_emails(),
-        requested,
-        DEV_LOGIN.source,
-        peer.is_loopback(),
-    )?;
+) -> Result<(HeaderMap, Json<AuthResponse>), DevLoginRefusal> {
+    let (target, email) = resolve_request(&DEV_LOGIN, req, peer.is_loopback())?;
 
     let connection = establish_connection().await.map_err(|e| {
         tracing::error!("dev-login: failed to establish database connection: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let existing = Users::find()
-        .filter_by_email(&email)
-        .one(&connection)
-        .await
-        .map_err(|e| {
-            tracing::error!("dev-login: failed to query user: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    let user = match existing {
-        // A deleted row is a deliberate state; the bypass must not resurrect
-        // it, exactly as the OAuth handlers refuse to.
-        Some(user) if user.status == UserStatus::Deleted => {
-            tracing::warn!("dev-login: refused {email} — user is deleted");
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-        Some(user) => user,
-        None => {
-            let name = email.split('@').next().unwrap_or(&email).to_string();
-            let new_user = users::ActiveModel {
-                id: Set(Uuid::new_v4()),
-                email: Set(Some(email.clone())),
-                name: Set(name),
-                picture: Set(None),
-                email_verified: Set(true),
-                magic_link_token: ActiveValue::NotSet,
-                magic_link_token_expires_at: ActiveValue::NotSet,
-                status: Set(UserStatus::Active),
-                created_at: ActiveValue::NotSet,
-                last_login_at: ActiveValue::NotSet,
-            };
-            insert_user_or_fetch_existing(new_user, &email, &connection).await?
-        }
-    };
+    let user = account::find_or_provision(&email, target.persona(), &connection).await?;
 
     tracing::warn!(
         "dev-login: issued a session for {email} without authentication ({} is set \
@@ -471,258 +436,4 @@ async fn issue_dev_session(
             }),
         ),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unset_env_disables_the_endpoint() {
-        assert!(parse_dev_login_emails(None, None).is_empty());
-        assert!(parse_dev_login_emails(Some(""), None).is_empty());
-        assert!(parse_dev_login_emails(Some("  ,  "), None).is_empty());
-    }
-
-    #[test]
-    fn entries_are_trimmed_lowercased_and_validated() {
-        assert_eq!(
-            parse_dev_login_emails(
-                Some(" Dev@Oxy.local , not-an-email ,member@oxy.local"),
-                None
-            ),
-            vec!["dev@oxy.local".to_string(), "member@oxy.local".to_string()]
-        );
-    }
-
-    #[test]
-    fn no_requested_email_uses_the_first_entry() {
-        let allowed = parse_dev_login_emails(Some("dev@oxy.local,member@oxy.local"), None);
-        assert_eq!(
-            resolve_dev_login_email(&allowed, None),
-            Some("dev@oxy.local".to_string())
-        );
-        assert_eq!(
-            resolve_dev_login_email(&allowed, Some("   ")),
-            Some("dev@oxy.local".to_string())
-        );
-    }
-
-    #[test]
-    fn requested_email_matches_case_insensitively() {
-        let allowed = parse_dev_login_emails(Some("dev@oxy.local,member@oxy.local"), None);
-        assert_eq!(
-            resolve_dev_login_email(&allowed, Some("MEMBER@oxy.local")),
-            Some("member@oxy.local".to_string())
-        );
-    }
-
-    #[test]
-    fn unlisted_email_is_refused_rather_than_falling_back() {
-        let allowed = parse_dev_login_emails(Some("dev@oxy.local"), None);
-        assert_eq!(
-            resolve_dev_login_email(&allowed, Some("owner@oxy.tech")),
-            None
-        );
-    }
-
-    #[test]
-    fn empty_allowlist_never_resolves() {
-        assert_eq!(resolve_dev_login_email(&[], None), None);
-        assert_eq!(resolve_dev_login_email(&[], Some("dev@oxy.local")), None);
-    }
-
-    // The gate itself, decided before any database work — so these cover the
-    // two refusals the endpoint promises without needing Postgres. The third
-    // refusal (401 for a deleted user) sits past `establish_connection` and is
-    // not reachable from a unit test.
-
-    #[test]
-    fn disabled_is_a_404_not_a_403() {
-        // 404 rather than 403 on purpose: a server without the env var must
-        // not admit the route exists.
-        assert_eq!(
-            resolve_or_refuse(&[], None, None, true),
-            Err(StatusCode::NOT_FOUND)
-        );
-        assert_eq!(
-            resolve_or_refuse(&[], Some("dev@oxy.local"), None, true),
-            Err(StatusCode::NOT_FOUND)
-        );
-    }
-
-    // Where the allow-list comes from. The release-build cases are the reason
-    // `resolve_source` takes `debug_build` instead of reading `cfg!` inline:
-    // a debug test run could not otherwise exercise them, and they are exactly
-    // the ones that would be a production auth bypass if they regressed.
-
-    fn roster(v: &str) -> Option<String> {
-        Some(v.to_string())
-    }
-
-    #[test]
-    fn explicit_var_wins_in_every_build() {
-        for debug_build in [true, false] {
-            assert_eq!(
-                resolve_source(
-                    roster("dev@oxy.local"),
-                    roster("staff@oxy.tech"),
-                    debug_build
-                ),
-                (roster("dev@oxy.local"), Some(DevLoginSource::Explicit))
-            );
-        }
-    }
-
-    #[test]
-    fn debug_build_falls_back_to_the_staff_roster() {
-        assert_eq!(
-            resolve_source(None, roster("staff@oxy.tech"), true),
-            (roster("staff@oxy.tech"), Some(DevLoginSource::GlobalAdmins))
-        );
-    }
-
-    #[test]
-    fn the_pre_rename_spelling_is_not_a_rung() {
-        // OXY_APP_ADMINS was removed from every reader. Nothing here consults
-        // it, so a .env that still uses only the old name resolves to nothing
-        // — `custom_apps_auth::warn_on_removed_legacy_admins_env` is what tells
-        // the operator, rather than a silent grant from a var we no longer read.
-        assert_eq!(resolve_source(None, None, true), (None, None));
-    }
-
-    #[test]
-    fn release_build_never_falls_back_to_the_roster() {
-        // The whole point. OXY_GLOBAL_ADMINS is set on every real deployment,
-        // so a release binary honoring it would mint Global-Admin sessions to
-        // anyone who can reach the server — including, via kubectl
-        // port-forward, callers who present as loopback.
-        let resolved = resolve_source(None, roster("staff@oxy.tech"), false);
-        assert_eq!(resolved, (None, None));
-        assert!(parse_dev_login_emails(resolved.0.as_deref(), resolved.1).is_empty());
-    }
-
-    #[test]
-    fn set_but_empty_disables_even_on_a_debug_build() {
-        // OXY_DEV_LOGIN_EMAILS= is the off switch that doesn't require
-        // unsetting the staff roster the rest of the app needs.
-        let (raw, source) = resolve_source(Some(String::new()), roster("staff@oxy.tech"), true);
-        assert!(parse_dev_login_emails(raw.as_deref(), source).is_empty());
-    }
-
-    #[test]
-    fn nothing_set_is_disabled_in_both_builds() {
-        assert_eq!(resolve_source(None, None, true), (None, None));
-        assert_eq!(resolve_source(None, None, false), (None, None));
-    }
-
-    // Who may USE the list, as opposed to where it came from. `serve` binds
-    // 0.0.0.0 by default, so an inferred roster that answered a LAN peer would
-    // vend staff sessions to a coffee-shop network with nothing configured.
-
-    #[test]
-    fn an_inferred_roster_is_refused_off_box() {
-        let allowed = parse_dev_login_emails(Some("staff@oxy.tech"), None);
-        let source = DevLoginSource::GlobalAdmins;
-        // 404, not 403 — from off-box the endpoint must not admit it exists.
-        assert_eq!(
-            resolve_or_refuse(&allowed, None, Some(source), false),
-            Err(StatusCode::NOT_FOUND),
-            "{source:?} must not be served to a remote peer"
-        );
-        assert_eq!(
-            resolve_or_refuse(&allowed, None, Some(source), true),
-            Ok("staff@oxy.tech".into()),
-            "{source:?} must still work on the box itself"
-        );
-    }
-
-    #[test]
-    fn an_explicit_list_is_served_to_any_peer() {
-        // The escape hatch: containers, remote dev boxes and CI need this, and
-        // somebody deliberately typed the list.
-        let allowed = parse_dev_login_emails(Some("dev@oxy.local"), None);
-        assert_eq!(
-            resolve_or_refuse(&allowed, None, Some(DevLoginSource::Explicit), false),
-            Ok("dev@oxy.local".into())
-        );
-    }
-
-    /// `/auth/config` must answer the same question the endpoint answers, or
-    /// the 404 leaks through the neighbouring public route. Drives the real
-    /// `reachable`, which `dev_login_reachable_by` is a thin wrapper over —
-    /// only the address parsing is the test's own.
-    fn reachable_by(enabled: bool, loopback_only: bool, peer: Option<&str>) -> bool {
-        reachable(
-            enabled,
-            loopback_only,
-            peer.map(|addr| addr.parse().unwrap()),
-        )
-    }
-
-    #[test]
-    fn config_hides_a_loopback_only_bypass_from_off_box_callers() {
-        // The off-box caller gets a 404 from the endpoint; the config it hits
-        // one request earlier must not contradict that.
-        assert!(!reachable_by(true, true, Some("192.168.1.20:5000")));
-        assert!(reachable_by(true, true, Some("127.0.0.1:5000")));
-        // An explicit allow-list is a deliberate act, so it is advertised to
-        // whoever can reach it — that's the container/CI escape hatch.
-        assert!(reachable_by(true, false, Some("192.168.1.20:5000")));
-        // Off entirely ⇒ never advertised, from anywhere.
-        assert!(!reachable_by(false, false, Some("127.0.0.1:5000")));
-    }
-
-    #[test]
-    fn unknown_peer_fails_closed() {
-        // No connect-info (a listener without `into_make_service_with_connect_info`,
-        // or a router-level test) must read as "not loopback", never as "trusted".
-        assert!(!reachable_by(true, true, None));
-        assert!(reachable_by(true, false, None));
-        assert_eq!(
-            resolve_or_refuse(
-                &parse_dev_login_emails(Some("dev@oxy.local"), None),
-                None,
-                Some(DevLoginSource::GlobalAdmins),
-                PeerAddr(None).is_loopback(),
-            ),
-            Err(StatusCode::NOT_FOUND)
-        );
-    }
-
-    #[test]
-    fn loopback_covers_ipv4_mapped_ipv6() {
-        // ::ffff:127.0.0.1 is the same machine; Ipv6Addr::is_loopback alone
-        // says otherwise, which would break the fallback on a dual-stack bind.
-        for addr in ["127.0.0.1:1", "[::1]:1", "[::ffff:127.0.0.1]:1"] {
-            assert!(
-                is_loopback_peer(addr.parse().unwrap()),
-                "{addr} should count as loopback"
-            );
-        }
-        for addr in ["192.168.1.20:1", "10.0.0.5:1", "[2001:db8::1]:1"] {
-            assert!(
-                !is_loopback_peer(addr.parse().unwrap()),
-                "{addr} must not count as loopback"
-            );
-        }
-    }
-
-    #[test]
-    fn unlisted_email_is_a_403_never_a_silent_fallback() {
-        let allowed = parse_dev_login_emails(Some("dev@oxy.local"), None);
-        assert_eq!(
-            resolve_or_refuse(
-                &allowed,
-                Some("owner@oxy.tech"),
-                Some(DevLoginSource::Explicit),
-                true
-            ),
-            Err(StatusCode::FORBIDDEN)
-        );
-        assert_eq!(
-            resolve_or_refuse(&allowed, None, Some(DevLoginSource::Explicit), true),
-            Ok("dev@oxy.local".into())
-        );
-    }
 }

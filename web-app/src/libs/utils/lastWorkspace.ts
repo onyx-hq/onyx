@@ -100,7 +100,7 @@ export function clearLastOrgSlug(): void {
  * cloning is skipped because it's transient (would loop the dispatcher), but
  * failed is kept so the user lands on the last workspace and can retry from
  * the workspace shell instead of being silently routed away. Returns null
- * when no navigable workspace exists — callers route to onboarding.
+ * when no navigable workspace exists — the org root then shows "being set up".
  */
 export function pickWorkspace(
   workspaces: WorkspaceSummary[],

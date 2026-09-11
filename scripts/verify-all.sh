@@ -18,11 +18,10 @@
 #           times out. Phase 2 splits into five invocations — see the comment
 #           there for which constraint each boundary is.
 #   local   flows the runner backs with `oxy start --local --enterprise`.
-#   cloud   flows the runner backs with `oxy start --enterprise --clean`.
-#           ORDER MATTERS: --clean empties Postgres, and the admin surfaces have
-#           nothing to render until onboarding has created an org. Alphabetical
-#           order puts onboarding last, so it seeds a database the other five
-#           already failed against. This runs it first.
+#   cloud   flows against an `oxy start --enterprise` this script starts (NOT
+#           the runner's `--clean` one) and fills with `oxy seed` first — the
+#           admin surfaces and the airway run page have nothing to render on an
+#           empty database, and no UI path creates an org any more.
 #   obs     flows that read ClickHouse. No seed path exists for observability
 #           data, so the spans are inserted directly (the shape
 #           `just clickhouse-obs-verify` uses) rather than paying for agent runs.
@@ -280,28 +279,26 @@ else
   bad "$(grep -oE '[0-9]+/[0-9]+ cases passed' "$LOG_DIR/b-local.log" | tail -1) — see $LOG_DIR/b-local.log"
 fi
 
-# ── cloud-backed flows, onboarding FIRST ─────────────────────────────────────
-bold "4. Cloud-backed flows (onboarding seeds, then the admin surfaces)"
-echo "  note: the runner boots these with --clean, which empties the local oxy postgres volume"
-if flow_run onboarding-blank-workspace > "$LOG_DIR/b-onboard.log" 2>&1; then
-  ok "onboarding seeded an org + workspace"
-  SEEDED=1
-else
-  bad "onboarding failed — the five admin flows below have nothing to render"
-  SEEDED=0
-fi
-record "B: cloud onboarding" "$([ $SEEDED = 1 ] && echo PASS || echo FAIL)" "$(grep -oE '[0-9]+/[0-9]+ cases passed' "$LOG_DIR/b-onboard.log" | tail -1)"
-
-# The spawned backend stays up between invocations only if we keep it; the
-# runner reuses a healthy one, and reusing is the point — a second --clean here
-# would wipe what onboarding just created.
+# ── cloud-backed flows: backend up, `oxy seed`, then the admin surfaces ──────
+bold "4. Cloud-backed flows (oxy seed, then the admin surfaces)"
+# Self-serve org creation is gone, and with it the UI-driven seed that used to
+# run first here (`onboarding-blank-workspace`). `oxy seed` writes the dev
+# stack's fixtures into the backend's Postgres instead: the `local` org + a
+# compiled, promoted Demo workspace (examples/, which carries a `health_check:`
+# block) plus the partner tenants. Start the backend OURSELVES, without
+# --clean, before any flow: the runner reuses a healthy :3001, whereas one it
+# spawns boots `--clean` and would wipe the seed.
+#
+# `.env` is dotenvx-shaped and not shell-sourceable; read single values out.
+OWNER=$(grep -E '^OXY_OWNER=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"'' || true)
+GLOBAL_ADMINS=$(grep -E '^OXY_GLOBAL_ADMINS=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"'' || true)
+# `oxy start`'s own container (crates/app/src/cli/commands/status.rs).
+CLOUD_DB="${OXY_CLOUD_DATABASE_URL:-postgresql://postgres:postgres@localhost:15432/oxy}"
 if [ "$DRY" = 1 ]; then
   CLOUD_UP=1
 elif curl -sf --max-time 5 http://localhost:3001/api/health >/dev/null 2>&1; then
   CLOUD_UP=1
 else
-  # `.env` is dotenvx-shaped and not shell-sourceable; read the one value out.
-  OWNER=$(grep -E '^OXY_OWNER=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"'' || true)
   ( OXY_DEV_LOGIN_EMAILS="${OWNER:-hello@oxy.tech}" \
       ./target/debug/oxy start --enterprise > "$LOG_DIR/cloud-backend.log" 2>&1 ) &
   for _ in $(seq 1 60); do
@@ -310,7 +307,20 @@ else
   curl -sf --max-time 3 http://localhost:3001/api/health >/dev/null 2>&1 && CLOUD_UP=1 || CLOUD_UP=0
 fi
 if [ "$CLOUD_UP" = 1 ]; then
-  OWNER=$(grep -E '^OXY_OWNER=' .env | head -1 | cut -d= -f2- | tr -d '"'"'"'' || true)
+  # OXY_GLOBAL_ADMINS reaches the SEED process only: it binds those emails as
+  # Owner of `local`. OWNER is appended so the staff session below is a member
+  # there — otherwise airway-pipeline-run's /local/workspaces/… page answers
+  # 403 assume_role_required instead of rendering.
+  if ! wet; then
+    printf '  [dry-run] OXY_DATABASE_URL=…@%s ./target/debug/oxy seed --workspace-path ./examples\n' "${CLOUD_DB##*@}"
+  elif OXY_DATABASE_URL="$CLOUD_DB" OXY_GLOBAL_ADMINS="${GLOBAL_ADMINS:+$GLOBAL_ADMINS,}${OWNER:-hello@oxy.tech}" \
+       ./target/debug/oxy seed --workspace-path ./examples > "$LOG_DIR/cloud-seed.log" 2>&1; then
+    record "B: cloud seed" PASS "oxy seed (compiled + promoted)"
+    ok "oxy seed: local org + Demo workspace compiled + promoted"
+  else
+    record "B: cloud seed" FAIL "see $LOG_DIR/cloud-seed.log"
+    bad "oxy seed failed — the five flows below have nothing to render; see $LOG_DIR/cloud-seed.log"
+  fi
   curl -s --max-time 10 "http://localhost:3000/api/auth/dev-login?email=${OWNER:-hello@oxy.tech}" -o "$LOG_DIR/staff.json" 2>/dev/null
   STOK=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["token"])' "$LOG_DIR/staff.json" 2>/dev/null || true)
   SUSR=$(python3 -c 'import json,sys;print(json.dumps(json.load(open(sys.argv[1])).get("user",{})))' "$LOG_DIR/staff.json" 2>/dev/null || true)

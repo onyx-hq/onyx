@@ -19,21 +19,24 @@ import type { Organization } from "@/types/organization";
  * that cannot fit in the synchronous `handlePostLoginOrgs` because it needs
  * to fetch workspaces.
  *
- *   0 orgs                        → /onboarding
- *   has orgs, 0 workspaces        → /:slug/onboarding
- *   has orgs, no navigable ws     → /:slug/onboarding (every ws is still cloning)
+ *   0 orgs                        → /onboarding ("not part of an org yet"),
+ *                                   or the admin console for staff standing
+ *   has orgs, 0 workspaces        → /:slug (OrgDispatcher renders "being set up")
+ *   has orgs, no navigable ws     → /:slug (every ws is still cloning)
  *   has orgs, ≥1 navigable ws     → /:slug/workspaces/:last-or-first-navigable
  *
  * …**unless the user holds a partner role**, in which case every branch that would
- * have dumped them into onboarding sends them to `/partners` instead. A partner's
- * job is their clients; they do not necessarily want an Oxy workspace of their own,
- * and being met with "create your first workspace" when you signed in to manage
- * five other companies is nonsense. They can still onboard themselves — the partner
- * console links straight to their own org.
+ * have left them without a workspace sends them to `/partners` instead. A partner's
+ * job is their clients; they do not necessarily want an Oxy workspace of their own.
+ * The partner console links straight to their own org.
  *
- * Note this only redirects the onboarding branches: a partner who DOES have a
+ * Note this only redirects the no-workspace branches: a partner who DOES have a
  * working workspace still lands in it, because that is their own product and they
  * asked for it by having one.
+ *
+ * The no-workspace branches hand off to the org root rather than render the
+ * "being set up" screen here: under OrgGuard the org store is primed (the
+ * workspace creator's GitHub import reads it) and the billing paywall applies.
  *
  * The chosen org follows (a) last-org-slug from localStorage, else (b) the
  * first org returned by the API. Navigable means `status === "ready"` or
@@ -86,7 +89,7 @@ export default function PostLoginDispatcher() {
   }
 
   if (!orgs || orgs.length === 0) {
-    return <Navigate to={isPartner ? ROUTES.PARTNERS.ROOT : ROUTES.ONBOARDING} replace />;
+    return <Navigate to={noOrgDestination(isPartner, !!user?.is_app_admin)} replace />;
   }
 
   if (!chosenOrg) return <FullPageSpinner />;
@@ -100,24 +103,18 @@ export default function PostLoginDispatcher() {
 
   if (!workspaces || workspaces.length === 0) {
     return (
-      <Navigate
-        to={isPartner ? ROUTES.PARTNERS.ROOT : ROUTES.ORG(chosenOrg.slug).ONBOARDING}
-        replace
-      />
+      <Navigate to={isPartner ? ROUTES.PARTNERS.ROOT : ROUTES.ORG(chosenOrg.slug).ROOT} replace />
     );
   }
 
   const target = pickWorkspace(workspaces, chosenOrg.id);
   if (!target) {
-    // Every workspace is still cloning or failed — send to onboarding so the
-    // user can create a new one. Drop any stale per-org lastWorkspace id so
-    // next visit doesn't re-select the broken workspace.
+    // No workspace is navigable yet (all still cloning) — the org root shows
+    // "being set up" until one is. Drop any stale per-org lastWorkspace id so
+    // next visit doesn't re-select a workspace that isn't navigable.
     clearLastWorkspaceId(chosenOrg.id);
     return (
-      <Navigate
-        to={isPartner ? ROUTES.PARTNERS.ROOT : ROUTES.ORG(chosenOrg.slug).ONBOARDING}
-        replace
-      />
+      <Navigate to={isPartner ? ROUTES.PARTNERS.ROOT : ROUTES.ORG(chosenOrg.slug).ROOT} replace />
     );
   }
   setLastWorkspaceId(chosenOrg.id, target.id);
@@ -131,6 +128,14 @@ function FullPageSpinner() {
       <Spinner className='size-6' />
     </div>
   );
+}
+
+/** Where a user with no org membership lands: their clients, their console, or
+ *  the "not part of an org yet" page. Mirrors `handlePostLoginOrgs`. */
+function noOrgDestination(isPartner: boolean, hasStaffStanding: boolean): string {
+  if (isPartner) return ROUTES.PARTNERS.ROOT;
+  if (hasStaffStanding) return ROUTES.ADMIN.CUSTOMER_APPS;
+  return ROUTES.ONBOARDING;
 }
 
 function pickOrg(orgs: Organization[] | undefined): Organization | null {

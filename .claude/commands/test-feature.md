@@ -55,9 +55,9 @@ From `$ARGUMENTS`, infer:
 | Field | How to infer |
 |---|---|
 | `target:` | Match the surface phrase to the schema's enum (chat / ide / threads / onboarding / any). When ambiguous, default to `any`. |
-| Filename | Lower-kebab descriptive name **prefixed with the bucket the flow will land in** (`builder-…`, `chat-…`, `threads-…`, `ide-…`, `onboarding-…`). Don't shadow an existing flow filename. |
-| `backend_mode:` | `local` unless the flow exercises the cloud-mode onboarding wizard (org → workspace). Cloud means the runner spawns `oxy start --enterprise --clean` on port 3001. Mixed-mode invocations error loudly. |
-| `setup:` | Build from the **3 documented commands** in `fixtures/reset.ts:SetupCommand` only — `reset_test_file` (wipes `demo_project/test.sql`), `restore_demo_file:<rel>` (reverts a demo file via `git show HEAD:…` — used by builder flows), `goto:/<path>`. None of these can make a network call. Cloud-mode flows drive onboarding through the UI wizard rather than API seeding. |
+| Filename | Lower-kebab descriptive name **prefixed with the bucket the flow will land in** (`builder-…`, `chat-…`, `threads-…`, `ide-…`, `metric-tree-…`). Don't shadow an existing flow filename. |
+| `backend_mode:` | `local` unless the flow needs the multi-tenant (org → workspace) shape, e.g. an `/admin/*` surface. Cloud means the runner spawns `oxy start --enterprise --clean` on port 3001 — an empty DB with no org, and no UI creates one, so a flow that needs org data runs against a backend `oxy seed`ed beforehand (`scripts/verify-all.sh` phase 4). Mixed-mode invocations error loudly. |
+| `setup:` | Build from the **3 documented commands** in `fixtures/reset.ts:SetupCommand` only — `reset_test_file` (wipes `demo_project/test.sql`), `restore_demo_file:<rel>` (reverts a demo file via `git show HEAD:…` — used by builder flows), `goto:/<path>`. None of these can make a network call; flows never seed their own data. |
 | `cache_actions:` | `true`. Egress-substitution makes `false` no longer required for secret correctness — flip only for operational reasons (force-cold benchmark). |
 | `max_steps:` | 15–25 for typical flows. 30 default. Bump only if the flow has long pipelines (builder runs, agentic onboarding). |
 | Step text | Convert the dev's verbal user actions into one `act:` per logical action, each followed by a `wait_for:` that names the gate proving it worked. **Bias hard toward explicit `[data-testid=…]` selectors** — grep `web-app/src/**/*.tsx` for the testids referenced by the dev's description before authoring. |
@@ -171,7 +171,7 @@ The filename prefix determines the bucket:
 - `chat-*` → `ask-agent` bucket
 - `threads-*` → `threads` bucket
 - `ide-*` → `ide` bucket
-- `onboarding-*` → `onboarding` bucket
+- `metric-tree-*` → `metric-tree` bucket
 
 If the filename doesn't match any prefix, tell the dev: "This needs a new
 bucket entry in the `resolve-matrix` job's inline JSON in

@@ -971,8 +971,13 @@ pub async fn list_workspaces(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
+    // Never the nil UUID: it is the legacy `--local` workspace id, which this
+    // (cloud-only) surface's own `workspace_middleware` refuses with a 404. A
+    // database a `--local` run once touched keeps a nil "Local" row in its org,
+    // and listing it lands the post-login dispatcher on a workspace that spins.
     let workspaces = Workspaces::find()
         .filter(entity::workspaces::Column::OrgId.eq(ctx.org.id))
+        .filter(entity::workspaces::Column::Id.ne(Uuid::nil()))
         .all(&db)
         .await
         .map_err(|e| {

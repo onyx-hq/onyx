@@ -123,10 +123,12 @@ impl RoleRouter {
         self
     }
 
-    /// Nest a router owned by another crate, which declares its own roles.
-    /// `agentic-http` is the reason this exists: it sits below `oxy-app` in the
-    /// layering, so `oxy-app` cannot see its handlers, and used to cover all of
-    /// them with one wildcard plus per-route carve-outs.
+    /// Nest a router whose roles are declared beside its routes rather than at
+    /// this mount. `agentic-http` is the reason this exists: it sits below
+    /// `oxy-app` in the layering, so `oxy-app` cannot see its handlers, and used
+    /// to cover all of them with one wildcard plus per-route carve-outs. The
+    /// admin console uses it the same way — a FleetOk wildcard plus the one
+    /// route that writes a working copy (`admin::router_roles`).
     pub fn nest_declared(
         mut self,
         prefix: &str,

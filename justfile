@@ -173,6 +173,19 @@ dev:
     @echo "  just dev-backend"
     @echo "  just dev-frontend"
 
+# Flags: --no-build --no-seed --no-frontend --restart --clean. Guide: the oxy-run-and-verify skill.
+# Whole stack, detached + idempotent: build, `oxy start --enterprise`, seed, Vite -> .oxy-dev/state.json
+up *FLAGS:
+    @bash scripts/dev-up.sh up {{ FLAGS }}
+
+# Stop what `just up` started; --db also stops the oxy-postgres / oxy-clickhouse containers.
+down *FLAGS:
+    @bash scripts/dev-up.sh down {{ FLAGS }}
+
+# Health of the `just up` stack; exits 1 when it is not serving.
+status:
+    @bash scripts/dev-up.sh status
+
 # Start the Rust API server (http://localhost:3000)
 dev-backend:
     cargo run start

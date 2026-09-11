@@ -615,6 +615,28 @@ mod router_split_tests {
         );
     }
 
+    /// Customers do not create orgs — staff and partners onboard them — so
+    /// `POST /orgs` is a 405: the path stays mounted for the list, and nothing
+    /// handles the write. Built from the global tree alone, with no database:
+    /// `api_router`'s auth stack would answer 401 first and hide which it was.
+    #[tokio::test]
+    async fn self_serve_org_creation_is_not_mounted() {
+        let router = global::build_global_routes(&bare_app_state())
+            .into_router()
+            .with_state(bare_app_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/orgs")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "POST /orgs must not reach a handler"
+        );
+    }
+
     #[tokio::test]
     async fn external_router_fallback_stays_behind_auth() {
         if db_unavailable() {

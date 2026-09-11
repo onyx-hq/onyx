@@ -24,10 +24,10 @@ export function sectionFromParam(raw: string | null | undefined): SettingsSectio
  * `?settings=<section>` opens the dialog at that section once and strips the
  * param, so a refresh does not reopen it.
  *
- * Mounted wherever the dialog is — the workspace layout and the org
- * onboarding page — so the link the custom-app shell already emits
+ * Mounted wherever the dialog is — the workspace layout and the org's
+ * "being set up" screen — so the link the custom-app shell already emits
  * (`…/home?settings=organization.general`) lands, and so does a link into an
- * org that has no workspace yet (`/<org>/onboarding?settings=organization.crew`).
+ * org that has no workspace yet (`/<org>?settings=organization.crew`).
  * An unknown value is dropped rather than opening the wrong section; the
  * dialog's own gates decide what the viewer may see once it is open — a
  * valid section the viewer cannot see (a workspace section on an org with

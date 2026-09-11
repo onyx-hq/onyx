@@ -1,7 +1,7 @@
 use axum::http::StatusCode;
 use oxy::adapters::secrets::SecretsManager;
-use oxy::adapters::workspace::workspace_root_path;
 use oxy::service::secret_manager::SecretManagerService;
+use oxy_app::server::service::workspace_provisioning as provisioning;
 use uuid::Uuid;
 
 use super::dto::*;
@@ -36,84 +36,32 @@ pub(super) fn parse_subdir(raw: &str) -> Result<Option<std::path::PathBuf>, (Sta
     Ok(Some(path.to_path_buf()))
 }
 
-/// Resolve the target workspace directory for an onboarding operation.
-///
-/// Returns `<state_dir>/workspaces/<workspace_id>`, creating it if needed.
-/// Using the workspace UUID as the directory name guarantees uniqueness
-/// without any name-collision logic.
+// The three helpers below are thin adapters over `oxy_app`'s
+// `workspace_provisioning` — the one implementation of creating a workspace,
+// shared with the org-creation doors — kept so `setup_demo` / `setup_github`
+// read the same as before. See that module for the behavior.
+
+/// `<state_dir>/workspaces/<workspace_id>`, created if needed.
 pub(super) fn resolve_project_dir(
     workspace_id: Uuid,
 ) -> Result<std::path::PathBuf, (StatusCode, String)> {
-    let dir = workspace_root_path(workspace_id);
-    std::fs::create_dir_all(&dir).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to create workspace directory '{dir:?}': {e}"),
-        )
-    })?;
-    Ok(dir)
+    provisioning::resolve_project_dir(workspace_id).map_err(Into::into)
 }
 
-/// Find a unique workspace display name within `org_id` by appending " 2", " 3", …
-/// when the base name is taken.
-///
-/// Builds the full candidate list (`base`, `base 2`, …, `base 99`) up-front and
-/// queries `WHERE name IN (…)` in a single round trip. Using `IN` instead of
-/// `LIKE` avoids wildcard semantics, which matters because `base` can come from
-/// caller-controlled input (e.g. a GitHub repo name containing `_` or `%`).
-/// Names in other orgs are ignored so each org has its own independent namespace.
+/// A workspace display name unique within `org_id` (`base`, `base 2`, …).
 pub(super) async fn unique_display_name(
     base: &str,
     org_id: Option<Uuid>,
 ) -> Result<String, (StatusCode, String)> {
-    use entity::{prelude::Workspaces, workspaces};
-    use oxy::database::client::establish_connection;
-    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-    use std::collections::HashSet;
-
-    let db = establish_connection().await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database connection failed: {e}"),
-        )
-    })?;
-
-    let candidates: Vec<String> = std::iter::once(base.to_string())
-        .chain((2u32..=99).map(|i| format!("{base} {i}")))
-        .collect();
-
-    let mut query = Workspaces::find().filter(workspaces::Column::Name.is_in(candidates.clone()));
-    query = match org_id {
-        Some(id) => query.filter(workspaces::Column::OrgId.eq(id)),
-        None => query.filter(workspaces::Column::OrgId.is_null()),
-    };
-
-    let taken: HashSet<String> = query
-        .all(&db)
+    let db = connect().await?;
+    provisioning::unique_display_name(&db, base, org_id)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to query workspaces: {e}"),
-            )
-        })?
-        .into_iter()
-        .map(|w| w.name)
-        .collect();
-
-    candidates
-        .into_iter()
-        .find(|candidate| !taken.contains(candidate))
-        .ok_or_else(|| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Could not find a unique name for '{base}'"),
-            )
-        })
+        .map_err(Into::into)
 }
 
-/// Register the workspace in the DB. Returns the workspace's UUID.
-/// Does NOT activate the workspace — the caller decides when (and whether) to activate.
+/// Register the workspace in the DB and seed its health schedule. Returns the
+/// workspace's UUID. Does NOT activate the workspace.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn register_project(
     project_dir: &std::path::Path,
     name: &str,
@@ -124,115 +72,31 @@ pub(super) async fn register_project(
     git_namespace_id: Option<Uuid>,
     git_remote_url: Option<String>,
 ) -> Result<Uuid, (StatusCode, String)> {
-    use entity::workspaces;
-    use oxy::database::client::establish_connection;
-    use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+    let db = connect().await?;
+    let row = provisioning::NewWorkspaceRow {
+        name,
+        created_by,
+        org_id,
+        status,
+        git_namespace_id,
+        git_remote_url,
+    };
+    let registered = provisioning::register_workspace(&db, project_dir, workspace_id, row).await?;
+    if registered.created {
+        provisioning::seed_health_schedule(registered.id).await;
+    }
+    Ok(registered.id)
+}
 
-    let path_str = project_dir.to_string_lossy().to_string();
-
-    let db = establish_connection().await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database connection failed: {e}"),
-        )
-    })?;
-
-    use entity::prelude::Workspaces;
-
-    // Return the existing workspace if the same path is already registered (idempotent).
-    let existing = Workspaces::find()
-        .filter(workspaces::Column::Path.eq(path_str.clone()))
-        .one(&db)
+async fn connect() -> Result<sea_orm::DatabaseConnection, (StatusCode, String)> {
+    oxy::database::client::establish_connection()
         .await
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to query workspaces: {e}"),
+                format!("Database connection failed: {e}"),
             )
-        })?;
-
-    if let Some(existing) = existing {
-        return Ok(existing.id);
-    }
-
-    // Reject duplicate names within the same org — each workspace must have a
-    // unique display name relative to the org that owns it. Names in other orgs
-    // don't conflict (each org has its own namespace).
-    let mut name_query = Workspaces::find().filter(workspaces::Column::Name.eq(name));
-    name_query = match org_id {
-        Some(id) => name_query.filter(workspaces::Column::OrgId.eq(id)),
-        None => name_query.filter(workspaces::Column::OrgId.is_null()),
-    };
-    let name_taken = name_query
-        .one(&db)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to query workspaces: {e}"),
-            )
-        })?
-        .is_some();
-
-    if name_taken {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("A workspace named '{name}' already exists. Please choose a different name."),
-        ));
-    }
-
-    let new_workspace = workspaces::ActiveModel {
-        id: Set(workspace_id),
-        name: Set(name.to_string()),
-        git_namespace_id: Set(git_namespace_id),
-        git_remote_url: Set(git_remote_url),
-        created_at: Set(chrono::Utc::now().into()),
-        updated_at: Set(chrono::Utc::now().into()),
-        path: Set(Some(path_str.clone())),
-        last_opened_at: Set(None),
-        created_by: Set(created_by),
-        org_id: Set(org_id),
-        status: Set(status),
-        error: Set(None),
-        monthly_vlm_budget_micros: Set(None),
-        current_revision_id: Set(None),
-    };
-    new_workspace.insert(&db).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to register workspace '{}' in DB: {e}", name),
-        )
-    })?;
-    tracing::info!("Registered workspace '{}' at '{}'", name, path_str);
-
-    // Seed the per-workspace health schedule row **disabled**: health checks are
-    // opt-in, and a workspace being onboarded hasn't compiled a config.yml yet,
-    // so nothing here says it wants them. The compile worker enables it from
-    // `health_check` on the first promoted compile. Seeding the row anyway keeps
-    // the reconcile path a plain update.
-    //
-    // Both values come from the same resolvers the compile worker uses rather
-    // than being hardcoded, so there is exactly one definition of "unconfigured"
-    // — and seeding the cadence the first compile will also pick means that
-    // compile leaves `next_run_at` alone instead of recomputing it.
-    // Best-effort — never fail onboarding on this.
-    if let Err(e) = agentic_pipeline::scheduler::reconcile_health_schedule(
-        &db,
-        workspace_id,
-        oxy::config::health_check::resolve_interval(None),
-        oxy::config::health_check::resolve_enabled(None),
-    )
-    .await
-    {
-        tracing::warn!(
-            target: "health_eval",
-            error = %e,
-            %workspace_id,
-            "failed to seed health schedule for new workspace"
-        );
-    }
-
-    Ok(workspace_id)
+        })
 }
 
 /// Update the clone status and error message for a workspace row.

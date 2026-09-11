@@ -26,6 +26,24 @@ const WORKSPACE_FS: &[&str] = &[
     "WorkspaceManagerWorkingCopy",
     "WorkspaceRootWorkingCopy",
     "ConfigManager",
+    // Creating a workspace scaffolds its working copy.
+    "workspace_provisioning",
+    "create_blank_workspace",
+    "create_default_workspace",
+];
+
+/// Accesses a scanned crate makes behind a route it DOES declare, so the
+/// FleetOk default never applies to them. `(file suffix, needle)` — per needle,
+/// so the exemption cannot quietly cover a second kind of access in that file.
+const DECLARED_ACCESSES: &[(&str, &str)] = &[
+    // `POST /partners/{id}/orgs` creates the client org's Default workspace;
+    // `oxy_api_partner_console::route_roles()` declares it IdeOnly, and that
+    // crate's own test asserts the declaration classifies.
+    ("api-partner-console/src/orgs.rs", "workspace_provisioning"),
+    (
+        "api-partner-console/src/orgs.rs",
+        "create_default_workspace",
+    ),
 ];
 
 fn rust_sources(dir: &Path) -> Vec<(String, String)> {
@@ -54,14 +72,16 @@ fn the_crates_mounted_without_a_declaration_never_touch_the_working_copy() {
     for crate_dir in [
         "../cameras/src",
         "../airhouse/src",
-        // Declared FleetOk wholesale by `nest_all` in global.rs, so a route
-        // added under one inherits FleetOk without anyone deciding. Measured
+        // Declared FleetOk wholesale by the `/admin` wildcard in global.rs, so a
+        // route added under one inherits FleetOk without anyone deciding. Measured
         // diskless when those declarations were written; the reconcile config
         // read under `/admin/workspace-health` runs on the WORKER, not on the
         // request path, which is why it is not an exception here.
         // Extracted from `src/server/api/partner_console` into a sibling crate.
         // The guard asserts its own sources are non-empty precisely so a move
-        // like that fails loudly instead of silently covering nothing.
+        // like that fails loudly instead of silently covering nothing. Merged
+        // at the root with no prefix; the one route that needs the ide is in
+        // its `route_roles()`, and exempted by `DECLARED_ACCESSES`.
         "../api-partner-console/src",
         "src/server/api/billing",
     ] {
@@ -75,6 +95,12 @@ fn the_crates_mounted_without_a_declaration_never_touch_the_working_copy() {
 
         for (path, body) in sources {
             for needle in WORKSPACE_FS {
+                if DECLARED_ACCESSES
+                    .iter()
+                    .any(|(file, declared)| path.ends_with(file) && declared == needle)
+                {
+                    continue;
+                }
                 for (index, line) in body.lines().enumerate() {
                     // A mention in prose is not an access.
                     let code = line.split("//").next().unwrap_or(line);

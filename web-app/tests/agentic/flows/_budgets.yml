@@ -37,15 +37,6 @@
   cold_usd: 0.30
   warm_usd: 0.005
 
-- flow: onboarding-blank-workspace
-  # DuckDB+oxymart.csv variant: drops the ClickHouse credential form and
-  # the multi-table schema-discovery step. Single-file upload + 1-table
-  # selection trims ~3 act steps off the old ClickHouse path. Build phase
-  # remains the dominant cost (60–180s wall clock, 1–3 LLM iterations to
-  # dismiss any propose_change retry).
-  cold_usd: 1.00
-  warm_usd: 0.01
-
 - flow: chat-panel-agent-switch
   cold_usd: 0.40
   warm_usd: 0.005

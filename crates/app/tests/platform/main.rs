@@ -66,6 +66,7 @@ mod no_dropped_partner_tables;
 mod notification_devices;
 mod oltp_provisioner;
 mod operating_graph;
+mod org_default_workspace;
 mod projects_query;
 mod run;
 mod simulation_lifecycle;

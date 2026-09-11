@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeDevLoginFailure } from "./describeDevLoginFailure";
+import { describeDevLoginFailure, serverReason } from "./describeDevLoginFailure";
 
 // Every one of these refusals used to be invisible: the page held its spinner
 // forever because the mutation's `status` never reached the surviving render.
@@ -33,5 +33,29 @@ describe("describeDevLoginFailure", () => {
   it("falls back to a generic message for anything else", () => {
     expect(describeDevLoginFailure(500, "dev@oxy.local")).toContain("server logs");
     expect(describeDevLoginFailure(undefined, undefined)).toContain("server logs");
+  });
+
+  // `?as=` refusals: the server's reason names the fix (valid personas, or the
+  // seed command), so it wins over any copy baked in here.
+  it("shows the server's reason for an unseeded persona", () => {
+    const reason = "persona `member` (amara.larsson@acme.test) is not seeded — run `just up`";
+    expect(describeDevLoginFailure(409, undefined, reason)).toBe(reason);
+    expect(describeDevLoginFailure(409, undefined)).toContain("oxy seed");
+  });
+
+  it("shows the server's reason for a bad persona request", () => {
+    const reason = "unknown persona `admin` — valid: staff, owner, member, operator, partner";
+    expect(describeDevLoginFailure(400, undefined, reason)).toBe(reason);
+    expect(describeDevLoginFailure(400, undefined)).toContain("`as`");
+  });
+});
+
+describe("serverReason", () => {
+  it("reads a string `error` field and nothing else", () => {
+    expect(serverReason({ error: "nope" })).toBe("nope");
+    expect(serverReason({ error: 42 })).toBeUndefined();
+    expect(serverReason("")).toBeUndefined();
+    expect(serverReason(null)).toBeUndefined();
+    expect(serverReason(undefined)).toBeUndefined();
   });
 });

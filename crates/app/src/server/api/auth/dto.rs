@@ -45,6 +45,10 @@ pub struct MagicLinkVerifyRequest {
 pub struct DevLoginRequest {
     #[serde(default)]
     pub email: Option<String>,
+    /// `as=<persona>` — a named seeded identity instead of an email. Exclusive
+    /// with `email`; see `dev_login::personas`.
+    #[serde(default, rename = "as")]
+    pub persona: Option<String>,
 }
 
 #[derive(Serialize)]
