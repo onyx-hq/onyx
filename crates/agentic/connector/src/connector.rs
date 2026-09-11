@@ -41,6 +41,33 @@ pub enum SqlDialect {
 }
 
 impl SqlDialect {
+    /// The ClickHouse dialect, named once.
+    ///
+    /// `Other`'s inner string is a prompt label, so anything that depends on
+    /// *which* vendor a dialect is must go through this constant rather than
+    /// matching the label itself — otherwise relabelling silently changes
+    /// behaviour with no compile error. [`ClickHouseConnector::dialect`]
+    /// returns it and [`Self::values_is_input_format`] compares against it, so
+    /// the two move together.
+    ///
+    /// [`ClickHouseConnector::dialect`]: crate::clickhouse::ClickHouseConnector
+    pub const CLICKHOUSE: SqlDialect = SqlDialect::Other("ClickHouse");
+
+    /// Whether this engine reads `VALUES` as an input *format* rather than as
+    /// an expression list.
+    ///
+    /// Where it does, the server stops parsing SQL at the keyword and treats
+    /// the rest of the request body as row data — so anything a caller appends
+    /// after the rows, a trailing comment included, is parsed as another row
+    /// and the statement is rejected whole (`Code: 27 … expected '(' before`).
+    /// Callers that decorate SQL must put the decoration in FRONT on such a
+    /// dialect. Only ClickHouse behaves this way among the connectors here;
+    /// Postgres and DuckDB parse `VALUES` as an expression list and tolerate a
+    /// trailing comment.
+    pub fn values_is_input_format(self) -> bool {
+        self == Self::CLICKHOUSE
+    }
+
     /// A concise, human-readable name for prompt injection.
     pub fn as_str(self) -> &'static str {
         match self {

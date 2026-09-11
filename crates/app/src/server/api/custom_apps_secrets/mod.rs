@@ -50,11 +50,11 @@ use oxy::service::secret_manager::SecretManagerService;
 use oxy_app_core::audit;
 use oxy_auth::extractor::AuthenticatedUserExtractor;
 use oxy_auth::types::AuthenticatedUser;
+use oxy_server_authz::role_guards::WorkspaceAdmin;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::server::api::middlewares::role_guards::WorkspaceAdmin;
 use declared::{AppSecretEntry, StoredSecret};
 
 /// Whether a submitted value would land as the empty string.

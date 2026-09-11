@@ -315,7 +315,7 @@ async fn http_query(
 #[async_trait]
 impl DatabaseConnector for ClickHouseConnector {
     fn dialect(&self) -> SqlDialect {
-        SqlDialect::Other("ClickHouse")
+        SqlDialect::CLICKHOUSE
     }
 
     async fn execute_query(
@@ -670,6 +670,32 @@ fn detect_join_keys(tables: &[SchemaTableInfo]) -> Vec<(String, String, String)>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The audit trailer that `ctx.warehouse` puts on every statement has to
+    /// lead rather than follow on this dialect, and that choice is made by
+    /// asking [`SqlDialect::values_is_input_format`]. Nothing in the type
+    /// system ties this connector's reported dialect to that predicate — both
+    /// go through `SqlDialect::CLICKHOUSE`, and a future edit could inline a
+    /// relabelled `Other(..)` here instead. This is the assertion that would
+    /// catch it; without it, such an edit silently reinstates a `Code: 27`
+    /// failure on every app INSERT.
+    #[tokio::test]
+    async fn the_reported_dialect_is_one_that_streams_values_as_data() {
+        let conn = ClickHouseConnector::new(
+            "http://127.0.0.1:1".to_string(),
+            "u".to_string(),
+            "p".to_string(),
+            "db".to_string(),
+        )
+        .await
+        .expect("new does no I/O and cannot fail");
+
+        assert!(
+            DatabaseConnector::dialect(&conn).values_is_input_format(),
+            "ClickHouse streams the bytes after VALUES as row data; a decorator \
+             that appends to such a statement corrupts the insert"
+        );
+    }
 
     /// `new` does no I/O, so an un-prepared connector must say so rather than
     /// answer "no tables" — the difference between a loud misconfiguration and

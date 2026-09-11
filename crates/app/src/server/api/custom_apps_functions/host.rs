@@ -827,8 +827,14 @@ impl FunctionHost for ProjectFunctionHost {
         let payload_table = payload.get("table").and_then(|v| v.as_str());
         data_audit::record_db_span(&summary, Some(database), payload_table);
         let (_, traceparent) = Self::trace_context();
-        let tagged = data_audit::commented(&sql, &self.identity, traceparent.as_deref());
+        // Connect before tagging, not after: where the trailer goes depends on
+        // the dialect on the other end of this connection.
         let connector = self.connect(database).await?;
+        let tagged = if data_audit::trailer_leads(connector.dialect(), &summary.verb) {
+            data_audit::commented_leading(&sql, &self.identity, traceparent.as_deref())
+        } else {
+            data_audit::commented(&sql, &self.identity, traceparent.as_deref())
+        };
         let plane = data_audit::plane_for_dialect(connector.dialect());
         let label = format!("warehouse {op}");
         with_db_timeout(&label, async {
