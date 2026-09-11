@@ -497,6 +497,12 @@ impl DurableTransport {
     /// `grace_secs` is the minimum `updated_at` age before a run is eligible,
     /// to avoid racing with an in-flight commit. Returns the number of runs
     /// rescued in this pass.
+    #[tracing::instrument(
+        target = "transport",
+        name = "stuck_run_sweeper_cycle",
+        skip(self),
+        fields(rescued = tracing::field::Empty, stuck = tracing::field::Empty)
+    )]
     pub async fn run_stuck_run_sweeper(&self, grace_secs: u64) -> u64 {
         let stuck = match crud::find_stuck_automation_runs(&self.db, grace_secs).await {
             Ok(s) => s,
@@ -506,6 +512,7 @@ impl DurableTransport {
             }
         };
 
+        tracing::Span::current().record("stuck", stuck.len() as u64);
         let mut rescued: u64 = 0;
         for run in &stuck {
             let spec = TaskSpec::AutomationDecision {
@@ -544,6 +551,7 @@ impl DurableTransport {
             rescued += 1;
         }
 
+        tracing::Span::current().record("rescued", rescued);
         if rescued > 0 {
             self.new_task_notify.notify_waiters();
         }

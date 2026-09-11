@@ -659,6 +659,15 @@ async fn create_web_application(
                 ServiceBuilder::new()
                     .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024))
                     .layer(CompressionLayer::new())
+                    // BENEATH compression, not only on the outer router: by the
+                    // time a response climbs past `CompressionLayer` its body is
+                    // gzip/br with no exact size, and `record_error_body` skips
+                    // anything without one — so the outer mount can never see a
+                    // custom-app error body over 32 bytes. The request span is
+                    // still current here (the trace layer wraps routing).
+                    .layer(axum::middleware::from_fn(
+                        oxy_telemetry::http_trace::record_error_body,
+                    ))
                     // Inject the function query executor (the shared data plane)
                     // so `custom_apps_functions` runs `ctx.query` through the
                     // trait without importing `projects::query`.
@@ -709,6 +718,11 @@ async fn create_web_application(
             crate::server::admission::admission_control,
         ))
         .layer(crate::server::router::build_cors_layer())
+        // Innermost of the trace pair: the request span must be current when
+        // it records a failed response's own message as `error.message`.
+        .layer(axum::middleware::from_fn(
+            oxy_telemetry::http_trace::record_error_body,
+        ))
         .layer(create_trace_layer());
 
     // Subdomain-based dispatch for custom-app bundles. Rewrites a
@@ -759,6 +773,9 @@ async fn create_web_application(
                 .layer(axum::middleware::from_fn(
                     crate::server::role_middleware::enforce_role,
                 ))
+                .layer(axum::middleware::from_fn(
+                    oxy_telemetry::http_trace::record_error_body,
+                ))
                 // Being a sibling of `main`, this surface would otherwise be
                 // the one API tree with no request span in HyperDX.
                 .layer(create_trace_layer()),
@@ -803,6 +820,9 @@ async fn create_internal_application(
     Ok(Router::new()
         .nest("/api", internal_router)
         .fallback_service(static_service)
+        .layer(axum::middleware::from_fn(
+            oxy_telemetry::http_trace::record_error_body,
+        ))
         .layer(create_trace_layer()))
 }
 

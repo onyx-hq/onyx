@@ -12,7 +12,33 @@ impl Coordinator {
     ///
     /// Processes messages from the transport until all tasks are terminal
     /// or the transport is closed.
+    ///
+    /// The whole loop is one span, and that is deliberate: `coordinator` is
+    /// the single loudest error target in prod (729 `handle_failed` lines in
+    /// six hours,
+    /// `internal-docs/2026-09-09-hyperdx-observability-findings.md` §3/§9) and
+    /// every one of them was emitted outside any span, so it arrived in
+    /// HyperDX with no trace id and nothing to group it by. Wrapping `run`
+    /// gives each of those lines the run it belongs to and a duration for the
+    /// run itself — the coordinator's lifetime *is* the agentic run, so this
+    /// is the trace an operator wants when asked "what happened to that run".
+    #[tracing::instrument(
+        target = "coordinator",
+        name = "agentic_run",
+        skip_all,
+        fields(
+            run_id = tracing::field::Empty,
+            attempt = self.attempt,
+            task_count = self.tasks.len(),
+        )
+    )]
     pub async fn run(&mut self) {
+        // The coordinator is constructed with its root task already seeded, so
+        // the run id is known here; an empty map means a test driving the loop
+        // with nothing in it, where `Empty` is the honest value.
+        if let Some(run_id) = self.tasks.values().next().map(|t| t.run_id.clone()) {
+            tracing::Span::current().record("run_id", run_id.as_str());
+        }
         tracing::debug!(target: "coordinator", task_count = self.tasks.len(), "run loop started");
         loop {
             let has_active = self.tasks.values().any(|t| {

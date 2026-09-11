@@ -12,6 +12,7 @@
 
 pub mod config;
 pub mod connector;
+pub mod telemetry;
 #[cfg(feature = "transactions")]
 pub mod transaction;
 

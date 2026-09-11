@@ -1698,9 +1698,15 @@ fn isolate_span(
         parent: None,
         "custom_app_function.isolate",
         app_id = %app_id,
+        // Recorded by the caller. This is the innermost span on the isolate
+        // thread, so it is the one whose fields every `ctx.log()` line copies
+        // into the stderr JSON (`span.app_slug`, `span.request_id`) — the two
+        // values a person debugging an app actually has in hand.
+        app_slug = tracing::field::Empty,
         org_id = %org_id,
         build_id = %build_id,
         invocation_id = %invocation_id,
+        request_id = tracing::field::Empty,
         function = %function_name,
         mode = %mode,
     );
@@ -1729,6 +1735,7 @@ fn isolate_span(
     skip_all,
     fields(
         app_id = %args.app.id,
+        app_slug = %args.app.slug,
         org_id = %args.org_id,
         project_id = %args.app.project_id,
         build_id = %args.build_id,
@@ -1750,17 +1757,20 @@ fn isolate_span(
     )
 )]
 async fn run_with_runtime(args: RunArgs<'_>) -> RunOutcome {
-    let request_id = args.request_id;
     let started = Instant::now();
+    let span = tracing::Span::current();
+    // Recorded, not declared, so an absent id stays absent instead of being
+    // reported as an empty string that looks like a value. Recorded BEFORE the
+    // run: the stderr JSON line copies the enclosing span's fields at the
+    // moment of each event, so every `ctx.log()` line of this invocation
+    // carries `span.request_id` — the id the browser, `oxy proxy` and the
+    // operator logs endpoint all quote.
+    if let Some(id) = args.request_id {
+        span.record("request_id", tracing::field::display(id));
+    }
 
     let outcome = run_with_runtime_inner(args).await;
 
-    let span = tracing::Span::current();
-    // Recorded, not declared, so an absent id stays absent instead of being
-    // reported as an empty string that looks like a value.
-    if let Some(id) = request_id {
-        span.record("request_id", tracing::field::display(id));
-    }
     span.record("status", outcome.0);
     span.record("duration_ms", started.elapsed().as_millis() as i64);
     outcome
@@ -2028,6 +2038,8 @@ async fn run_with_runtime_inner(args: RunArgs<'_>) -> RunOutcome {
 
     // Copied out before the `args` fields below are moved into the call.
     let app_id = args.app.id;
+    let app_slug = args.app.slug.clone();
+    let request_id = args.request_id;
     let org_id = args.org_id;
     let build_id = args.build_id;
     let invocation_id = args.invocation_id;
@@ -2057,14 +2069,21 @@ async fn run_with_runtime_inner(args: RunArgs<'_>) -> RunOutcome {
         // by `invocation_id`. The platform trace joins them properly:
         // `adopt_current_parent` parents by OpenTelemetry *context* — a pair
         // of ids — which pins nothing open.
-        isolate_span(
-            app_id,
-            org_id,
-            build_id,
-            invocation_id,
-            &function_name,
-            &mode,
-        ),
+        {
+            let span = isolate_span(
+                app_id,
+                org_id,
+                build_id,
+                invocation_id,
+                &function_name,
+                &mode,
+            );
+            span.record("app_slug", app_slug.as_str());
+            if let Some(id) = request_id {
+                span.record("request_id", tracing::field::display(id));
+            }
+            span
+        },
     )
     .await;
     watchdog.abort();

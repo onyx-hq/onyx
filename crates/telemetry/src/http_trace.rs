@@ -174,6 +174,7 @@ impl<B> MakeSpan<B> for OxyMakeSpan {
             http.route = route,
             http.response.status_code = Empty,
             error.type = Empty,
+            error.message = Empty,
             url.path = path_for_span(route, req.uri().path()).as_str(),
             url.query = req.uri().query().map(redacted_query).as_deref(),
             server.address =
@@ -240,6 +241,113 @@ impl<B> OnResponse<B> for OxyOnResponse {
             tracing::debug!(status = status.as_u16(), latency_ms, "request");
         }
     }
+}
+
+/// Error bodies larger than this are not read: the cause of a failed request
+/// is a sentence, and anything bigger is a page, not a message.
+pub const ERROR_BODY_MAX_BYTES: usize = 16 * 1024;
+
+/// What is recorded as `error.message`, at most.
+const ERROR_MESSAGE_MAX_BYTES: usize = 2 * 1024;
+
+/// Put a failed response's own explanation on the request span.
+///
+/// Every handler turns its error into a body its own way — `{"message": …}`,
+/// `{"error": …}`, plain text — and the layer that logs `request failed` only
+/// sees the status, so the one line an operator finds for a 5xx said `502` and
+/// nothing else (55 an hour in prod on 2026-09-10, cause unrecoverable). This
+/// middleware reads a **small, fully-buffered** 4xx/5xx body, records its
+/// message as `error.message` on the request span — which the `request failed`
+/// line then carries as `span.error.message`, and HyperDX as an attribute — and
+/// hands the bytes back unchanged. A streaming body (SSE, a proxied download)
+/// has no exact size and is never touched.
+///
+/// Mount it **inside** [`trace_layer`] (`.layer(from_fn(record_error_body))`
+/// before `.layer(trace_layer(..))`), so the request span is current, and
+/// **beneath** any `CompressionLayer`: a compressed body reports no exact size,
+/// so above one this middleware sees nothing but sub-32-byte identity bodies.
+pub async fn record_error_body(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::body::HttpBody as _;
+    let response = next.run(req).await;
+    let status = response.status();
+    if !(status.is_client_error() || status.is_server_error()) {
+        return response;
+    }
+    let small = response
+        .body()
+        .size_hint()
+        .exact()
+        .is_some_and(|n| n > 0 && n as usize <= ERROR_BODY_MAX_BYTES);
+    if !small {
+        return response;
+    }
+    let (mut parts, body) = response.into_parts();
+    let bytes = match axum::body::to_bytes(body, ERROR_BODY_MAX_BYTES).await {
+        Ok(b) => b,
+        // A well-behaved exact-size body under the cap cannot land here, but
+        // one that errors mid-read can. The body is gone either way; drop any
+        // `Content-Length` so hyper does not abort the connection on a length
+        // mismatch, and let the status stand on its own.
+        Err(_) => {
+            parts.headers.remove(http::header::CONTENT_LENGTH);
+            return axum::response::Response::from_parts(parts, axum::body::Body::empty());
+        }
+    };
+    let content_type = parts
+        .headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok());
+    if let Some(message) = error_message_from_body(content_type, &bytes) {
+        Span::current().record("error.message", message.as_str());
+    }
+    axum::response::Response::from_parts(parts, axum::body::Body::from(bytes))
+}
+
+/// The human part of an error body: the first of `message`, `error`,
+/// `detail`, `error_description` that is a string (one level of `error: {…}`
+/// nesting included), else — only for a JSON, `text/plain` or untyped body —
+/// the text itself. An HTML error page, an upstream's XML, or anything else is
+/// not a message and records nothing. Truncated at a char boundary.
+pub fn error_message_from_body(content_type: Option<&str>, bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let media = content_type
+        .and_then(|ct| ct.split(';').next())
+        .map(|m| m.trim().to_ascii_lowercase());
+    let textual = match media.as_deref() {
+        None | Some("text/plain") => true,
+        Some(m) => m == "application/json" || m.ends_with("+json"),
+    };
+    const KEYS: &[&str] = &["message", "error", "detail", "error_description"];
+    let from_json = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| {
+            let pick = |v: &serde_json::Value| {
+                KEYS.iter()
+                    .find_map(|k| v.get(*k).and_then(|x| x.as_str()).map(str::to_string))
+            };
+            pick(&v).or_else(|| v.get("error").and_then(pick))
+        });
+    let message = match from_json {
+        Some(m) => m,
+        None if textual => text.to_string(),
+        None => return None,
+    };
+    if message.len() <= ERROR_MESSAGE_MAX_BYTES {
+        return Some(message);
+    }
+    let cut = message
+        .char_indices()
+        .take_while(|(i, _)| *i < ERROR_MESSAGE_MAX_BYTES)
+        .last()
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(0);
+    Some(format!("{}…", &message[..cut]))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -324,8 +432,161 @@ mod tests {
         Router::new()
             .route("/items/{id}", get(|| async { "ok" }))
             .route("/boom", get(|| async { StatusCode::INTERNAL_SERVER_ERROR }))
+            .route(
+                "/upstream",
+                get(|| async {
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        axum::Json(serde_json::json!({
+                            "code": "upstream_error",
+                            "message": "airhouse refused the insert: table is read-only"
+                        })),
+                    )
+                }),
+            )
             .route("/api/ready", get(|| async { "ready" }))
+            .layer(axum::middleware::from_fn(record_error_body))
             .layer(trace_layer("x-oxy-request-id"))
+    }
+
+    #[test]
+    fn the_message_is_found_in_the_shapes_handlers_actually_return() {
+        let m = |b: &str| error_message_from_body(Some("application/json"), b.as_bytes());
+        assert_eq!(
+            m(r#"{"code":"x","message":"boom"}"#).as_deref(),
+            Some("boom")
+        );
+        assert_eq!(m(r#"{"error":"nope"}"#).as_deref(), Some("nope"));
+        assert_eq!(
+            m(r#"{"error":{"message":"nested"}}"#).as_deref(),
+            Some("nested")
+        );
+        assert_eq!(
+            error_message_from_body(Some("text/plain; charset=utf-8"), b"plain text failure")
+                .as_deref(),
+            Some("plain text failure")
+        );
+        assert_eq!(
+            error_message_from_body(None, b"untyped failure").as_deref(),
+            Some("untyped failure")
+        );
+        assert_eq!(
+            error_message_from_body(
+                Some("text/html; charset=utf-8"),
+                b"<html><body>404 Not Found</body></html>"
+            ),
+            None,
+            "an HTML error page is not a message"
+        );
+        assert_eq!(
+            error_message_from_body(Some("application/problem+json"), br#"{"detail":"quota"}"#)
+                .as_deref(),
+            Some("quota")
+        );
+        assert_eq!(m("   ").as_deref(), None);
+        let long = "é".repeat(ERROR_MESSAGE_MAX_BYTES);
+        assert!(m(&long).unwrap().ends_with('…'));
+    }
+
+    #[tokio::test]
+    async fn a_failed_response_puts_its_own_message_on_the_span_and_keeps_the_body() {
+        let (status, spans) = spans_for(
+            Request::builder()
+                .uri("/upstream")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(
+            attr(&spans[0], "error.message").as_deref(),
+            Some("airhouse refused the insert: table is read-only")
+        );
+
+        let res = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/upstream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            v["code"], "upstream_error",
+            "the client still gets the body"
+        );
+    }
+
+    /// `/customer-apps/{*path}` carries a per-route `CompressionLayer`. Above
+    /// it the body is br/gzip with no exact size and the middleware sees
+    /// nothing; beneath it, it sees the identity body. This pins why `serve.rs`
+    /// mounts it inside that route's stack.
+    #[tokio::test]
+    async fn the_middleware_must_sit_beneath_compression_to_see_the_body() {
+        use tower::ServiceBuilder;
+        use tower_http::compression::CompressionLayer;
+
+        async fn upstream_502() -> impl axum::response::IntoResponse {
+            (
+                StatusCode::BAD_GATEWAY,
+                axum::Json(serde_json::json!({
+                    "code": "upstream_error",
+                    "message": "the custom app's upstream refused the connection after 3 retries"
+                })),
+            )
+        }
+        let request = || {
+            Request::builder()
+                .uri("/app")
+                .header("accept-encoding", "br")
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        let beneath = Router::new()
+            .route(
+                "/app",
+                get(upstream_502).layer(
+                    ServiceBuilder::new()
+                        .layer(CompressionLayer::new())
+                        .layer(axum::middleware::from_fn(record_error_body)),
+                ),
+            )
+            .layer(trace_layer("x-oxy-request-id"));
+        let (_, spans) = spans_for_app(beneath, request()).await;
+        assert_eq!(
+            attr(&spans[0], "error.message").as_deref(),
+            Some("the custom app's upstream refused the connection after 3 retries")
+        );
+
+        let above = Router::new()
+            .route("/app", get(upstream_502).layer(CompressionLayer::new()))
+            .layer(axum::middleware::from_fn(record_error_body))
+            .layer(trace_layer("x-oxy-request-id"));
+        let (_, spans) = spans_for_app(above, request()).await;
+        assert_eq!(
+            attr(&spans[0], "error.message"),
+            None,
+            "above compression the body has no exact size and is skipped"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_successful_response_records_no_error_message() {
+        let (_, spans) = spans_for(
+            Request::builder()
+                .uri("/items/7")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(attr(&spans[0], "error.message"), None);
     }
 
     #[test]
@@ -394,6 +655,10 @@ mod tests {
     /// spans. The span closes when the response body is dropped, so the body
     /// is drained before reading.
     async fn spans_for(req: Request<Body>) -> (StatusCode, Vec<SpanData>) {
+        spans_for_app(app(), req).await
+    }
+
+    async fn spans_for_app(app: Router, req: Request<Body>) -> (StatusCode, Vec<SpanData>) {
         opentelemetry::global::set_text_map_propagator(
             opentelemetry_sdk::propagation::TraceContextPropagator::new(),
         );
@@ -405,7 +670,7 @@ mod tests {
             .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test")));
         let _guard = tracing::subscriber::set_default(subscriber);
 
-        let res = app().oneshot(req).await.unwrap();
+        let res = app.oneshot(req).await.unwrap();
         let status = res.status();
         let _ = axum::body::to_bytes(res.into_body(), usize::MAX).await;
         provider.force_flush().unwrap();

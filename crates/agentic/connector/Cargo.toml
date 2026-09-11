@@ -123,6 +123,8 @@ sqlx = { workspace = true, optional = true }
 
 [dev-dependencies]
 duckdb = { workspace = true }
+# Capturing subscriber for the query-span test in `duckdb`.
+tracing-subscriber = { workspace = true, features = ["registry"] }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = { workspace = true }

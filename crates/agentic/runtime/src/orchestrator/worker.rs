@@ -224,6 +224,42 @@ impl Worker {
         tracing::debug!(target: "worker", "assignment channel closed, shutting down");
     }
 
+    /// One span per durable task execution — the span this system was most
+    /// missing.
+    ///
+    /// `handle_task` is `tokio::spawn`ed from [`Worker::run`], so until now it
+    /// ran with no span and no parent at all. Three things followed, all of
+    /// them measured in
+    /// `internal-docs/2026-09-09-hyperdx-observability-findings.md`: every
+    /// `worker` log line reached HyperDX with no trace id (§3 — 0 of 4,179 on
+    /// `oxy-worker`); the `llm_round` spans created below it (`gen_ai.*`,
+    /// fully implemented in `agentic_llm::genai`) arrived as orphan roots
+    /// rather than as children of the run that made the call (§7); and there
+    /// was no span anywhere whose duration was "how long this task took",
+    /// which is the first question anyone asks about a queued job.
+    ///
+    /// Being the root of the task's span tree is the point, so this is
+    /// deliberately not `skip_all`-with-nothing: `task_id` and `run_id` are
+    /// the two ids the queue, the event stream and the product Traces console
+    /// all key on, so a HyperDX trace joins to `agentic_task_queue` rows and
+    /// to the tenant-visible run without a lookup.
+    #[tracing::instrument(
+        // Structural, not incidental: a claimed task is the root of its own
+        // trace whatever span happens to be current where it is spawned.
+        // `parent` must come BEFORE `target`: tracing-attributes 0.1.31 checks
+        // `args.target.is_some()` in its `parent` branch and rejects the pair
+        // in the other order ("expected only a single `parent` argument").
+        parent = None,
+        target = "worker",
+        name = "agentic_task",
+        skip_all,
+        fields(
+            task_id = %task_id,
+            run_id = %assignment.run_id,
+            parent_task_id = assignment.parent_task_id.as_deref().unwrap_or(""),
+            spec_kind = tracing::field::Empty,
+        )
+    )]
     async fn handle_task(
         transport: Arc<dyn WorkerTransport>,
         executor: Arc<dyn TaskExecutor>,
@@ -237,6 +273,7 @@ impl Worker {
         // helpful for triaging "stuck claiming" vs "stuck executing"
         // cases that the existing tracing logs make hard to distinguish.
         let spec_kind = crate::orchestrator::coordinator::source_type_for_spec(&assignment.spec);
+        tracing::Span::current().record("spec_kind", spec_kind.as_str());
         let _ = transport
             .send(WorkerMessage::Event {
                 task_id: task_id.clone(),
@@ -573,6 +610,158 @@ mod tests {
         // Drop transport sender to shut down worker.
         drop(transport);
         let _ = worker_handle;
+    }
+
+    /// Executor that logs from inside `execute` — the stand-in for every
+    /// `worker` / `coordinator` line that used to reach HyperDX with no span.
+    struct LoggingExecutor;
+
+    #[async_trait]
+    impl TaskExecutor for LoggingExecutor {
+        async fn execute(&self, _assignment: TaskAssignment) -> Result<ExecutingTask, String> {
+            tracing::info!(target: "worker", "executing inside the task");
+            Err("stop here; the span is what is under test".into())
+        }
+    }
+
+    /// Records, for every event, the chain of spans it was emitted inside and
+    /// the `task_id` / `run_id` those spans carry.
+    mod capture {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        use tracing::field::{Field, Visit};
+        use tracing::span::{Attributes, Id};
+        use tracing::{Event, Subscriber};
+        use tracing_subscriber::Layer;
+        use tracing_subscriber::layer::Context;
+        use tracing_subscriber::registry::LookupSpan;
+
+        /// A span's name and its recorded fields.
+        pub type SpanRecord = (String, HashMap<String, String>);
+        /// An event's message and the spans it was emitted inside, innermost first.
+        pub type EventRecord = (String, Vec<SpanRecord>);
+
+        #[derive(Default, Clone)]
+        pub struct Seen {
+            pub events: Arc<Mutex<Vec<EventRecord>>>,
+        }
+
+        struct Fields(HashMap<String, String>);
+        impl Visit for Fields {
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                self.0
+                    .insert(field.name().to_string(), format!("{value:?}"));
+            }
+            fn record_str(&mut self, field: &Field, value: &str) {
+                self.0.insert(field.name().to_string(), value.to_string());
+            }
+        }
+
+        impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Seen {
+            fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+                let mut fields = Fields(HashMap::new());
+                attrs.record(&mut fields);
+                if let Some(span) = ctx.span(id) {
+                    span.extensions_mut().insert(fields.0);
+                }
+            }
+
+            fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+                let mut msg = Fields(HashMap::new());
+                event.record(&mut msg);
+                let chain = ctx
+                    .event_scope(event)
+                    .map(|scope| {
+                        scope
+                            .map(|span| {
+                                let fields = span
+                                    .extensions()
+                                    .get::<HashMap<String, String>>()
+                                    .cloned()
+                                    .unwrap_or_default();
+                                (span.name().to_string(), fields)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let message = msg.0.remove("message").unwrap_or_default();
+                self.events.lock().unwrap().push((message, chain));
+            }
+        }
+    }
+
+    /// The durable task is the root of its own trace, keyed by the ids the
+    /// queue and the product console use. Before `handle_task` was
+    /// instrumented, every line below it had no span at all — which is what
+    /// `oxy-worker`'s 0% trace-id coverage in HyperDX was measuring.
+    ///
+    /// Current-thread runtime on purpose: `set_default` is thread-local, and
+    /// `Worker::run` spawns `handle_task`, so a multi-thread runtime could run
+    /// the task on a thread that never saw this subscriber and pass vacuously.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_task_runs_inside_an_agentic_task_span_carrying_its_ids() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let seen = capture::Seen::default();
+        let subscriber = tracing_subscriber::registry().with(seen.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let transport = LocalTransport::with_defaults();
+        tokio::spawn({
+            let transport = transport.clone();
+            async move {
+                Worker::new(
+                    transport as Arc<dyn WorkerTransport>,
+                    Arc::new(LoggingExecutor),
+                )
+                .run()
+                .await;
+            }
+        });
+        coord(&transport)
+            .assign(TaskAssignment {
+                task_id: "task-7".into(),
+                parent_task_id: Some("task-6".into()),
+                run_id: "run-42".into(),
+                spec: TaskSpec::Agent {
+                    agent_id: "a".into(),
+                    question: "q".into(),
+                    extra: None,
+                },
+                policy: None,
+            })
+            .await
+            .unwrap();
+        // The executor fails, so the worker reports an outcome and returns.
+        loop {
+            match coord(&transport).recv().await {
+                Some(WorkerMessage::Outcome { .. }) => break,
+                Some(_) => continue,
+                None => panic!("transport closed before the task reported"),
+            }
+        }
+
+        let events = seen.events.lock().unwrap().clone();
+        let (_, chain) = events
+            .iter()
+            .find(|(msg, _)| msg == "executing inside the task")
+            .expect("the executor's line was captured");
+        let (name, fields) = chain
+            .first()
+            .expect("the executor's line was emitted inside a span — it had none before");
+        assert_eq!(name, "agentic_task");
+        assert_eq!(fields.get("task_id").map(String::as_str), Some("task-7"));
+        assert_eq!(fields.get("run_id").map(String::as_str), Some("run-42"));
+        assert_eq!(
+            fields.get("parent_task_id").map(String::as_str),
+            Some("task-6")
+        );
+        assert_eq!(
+            chain.len(),
+            1,
+            "a claimed task is the root of its own trace, not a child of the claim loop: {chain:?}"
+        );
     }
 
     #[tokio::test]

@@ -934,7 +934,22 @@ fn spawn_latency_worker(
 }
 
 /// Local-mode tick: single cached context, no per-row routing needed.
+///
+/// One span per driver pass, which is what makes the `recovery`, `scheduler`,
+/// `metric_monitoring`, `health_eval` and `preagg` lines emitted underneath it
+/// correlate: they are the loudest untraced targets on `oxy-worker`, which
+/// carried a trace id on **0** of 4,179 log lines
+/// (`internal-docs/2026-09-09-hyperdx-observability-findings.md` §3). The span
+/// sits on the outer pass rather than on each `tick_*` so a workspace fleet
+/// does not multiply one heartbeat into hundreds of spans — one pass, one
+/// trace, every line in it.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(
+    target = "recovery",
+    name = "driver_tick",
+    skip_all,
+    fields(mode = "local")
+)]
 async fn tick_local(
     db: &sea_orm::DatabaseConnection,
     runtime: &Arc<RuntimeState>,
@@ -981,7 +996,17 @@ async fn tick_local(
 /// SELECT once per tick to avoid scanning every workspace in the DB when
 /// most have no work; the per-workspace re-select inside `drive_pending`
 /// CAS-protects against double-drive across replicas.
+///
+/// Spanned for the same reason as [`tick_local`], and it matters more here:
+/// cloud is the mode the fleet actually runs, so this is the root every
+/// scheduler / recovery / monitor line on `oxy-worker` hangs off.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(
+    target = "recovery",
+    name = "driver_tick",
+    skip_all,
+    fields(mode = "cloud")
+)]
 async fn tick_cloud(
     db: &sea_orm::DatabaseConnection,
     runtime: &Arc<RuntimeState>,

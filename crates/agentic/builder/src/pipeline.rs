@@ -83,6 +83,11 @@ pub fn start_pipeline(params: BuilderPipelineParams) -> PipelineHandle<BuilderEv
         oxy.span_type = "builder",
         question = %params.question,
     );
+    // A root for the product console (`ParentSpanId = ''`), but not an
+    // orphan in HyperDX: `follows_from` becomes an OpenTelemetry span link to
+    // whatever started the run — the HTTP request, or the `agentic_task` a
+    // worker claimed — so the trace view can step from one to the other.
+    run_span.follows_from(tracing::Span::current());
     let (event_tx, event_rx) = mpsc::channel::<Event<BuilderEvent>>(256);
     let event_stream: EventStream<BuilderEvent> = event_tx;
 
@@ -204,6 +209,11 @@ pub fn resume_pipeline(
         question = %params.question,
         resumed = true,
     );
+    // A root for the product console (`ParentSpanId = ''`), but not an
+    // orphan in HyperDX: `follows_from` becomes an OpenTelemetry span link to
+    // whatever started the run — the HTTP request, or the `agentic_task` a
+    // worker claimed — so the trace view can step from one to the other.
+    run_span.follows_from(tracing::Span::current());
     let (event_tx, event_rx) = mpsc::channel::<Event<BuilderEvent>>(256);
     let event_stream: EventStream<BuilderEvent> = event_tx;
 

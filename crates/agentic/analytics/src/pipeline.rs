@@ -125,6 +125,11 @@ pub async fn start_pipeline(
         agent.prompt = %params.question,
         question = %params.question,
     );
+    // A root for the product console (`ParentSpanId = ''`), but not an
+    // orphan in HyperDX: `follows_from` becomes an OpenTelemetry span link to
+    // whatever started the run — the HTTP request, or the `agentic_task` a
+    // worker claimed — so the trace view can step from one to the other.
+    run_span.follows_from(tracing::Span::current());
     // Derive thinking/model overrides from config when extended thinking is requested.
     let (thinking_override, model_override) = if params.use_extended_thinking {
         params
@@ -303,6 +308,11 @@ pub async fn resume_pipeline(
         question = %params.question,
         resumed = true,
     );
+    // A root for the product console (`ParentSpanId = ''`), but not an
+    // orphan in HyperDX: `follows_from` becomes an OpenTelemetry span link to
+    // whatever started the run — the HTTP request, or the `agentic_task` a
+    // worker claimed — so the trace view can step from one to the other.
+    run_span.follows_from(tracing::Span::current());
     // Derive thinking/model overrides from config when extended thinking is requested.
     let (thinking_override, model_override) = if params.use_extended_thinking {
         params

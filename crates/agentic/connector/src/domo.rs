@@ -414,6 +414,21 @@ impl DatabaseConnector for DomoConnector {
         SqlDialect::Other("DOMO")
     }
 
+    #[tracing::instrument(
+        target = "agentic_connector::query",
+        name = "db.query",
+        skip_all,
+        err(level = "info", Display),
+        fields(
+            otel.name = %crate::telemetry::span_name(sql, "domo"),
+            otel.kind = "client",
+            db.system.name = "domo",
+            db.operation.name = %crate::telemetry::operation_name(sql),
+            db.query.text = %crate::telemetry::query_text(sql),
+            oxy.db.method = "execute_query",
+            oxy.db.sample_limit = sample_limit,
+        )
+    )]
     async fn execute_query(
         &self,
         sql: &str,
@@ -526,6 +541,20 @@ impl DatabaseConnector for DomoConnector {
         })
     }
 
+    #[tracing::instrument(
+        target = "agentic_connector::query",
+        name = "db.query",
+        skip_all,
+        err(level = "info", Display),
+        fields(
+            otel.name = %crate::telemetry::span_name(sql, "domo"),
+            otel.kind = "client",
+            db.system.name = "domo",
+            db.operation.name = %crate::telemetry::operation_name(sql),
+            db.query.text = %crate::telemetry::query_text(sql),
+            oxy.db.method = "execute_query_full",
+        )
+    )]
     async fn execute_query_full(&self, sql: &str) -> Result<TypedRowStream, ConnectorError> {
         let resp = self.http_query(sql).await?;
 

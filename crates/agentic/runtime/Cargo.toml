@@ -40,6 +40,8 @@ dashmap = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# Capturing subscriber for the span-shape tests in `orchestrator::worker`.
+tracing-subscriber = { workspace = true, features = ["registry"] }
 agentic-analytics = { path = "../analytics" }
 agentic-builder = { path = "../builder" }
 testcontainers = { workspace = true, features = ["blocking", "reusable-containers"] }

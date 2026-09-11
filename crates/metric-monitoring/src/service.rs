@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use agentic_analytics::{MetricTreeRunner, MetricTreeRunnerError};
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use tracing::Instrument;
 
 #[cfg(test)]
 use crate::config::WeekStart;
@@ -134,6 +135,17 @@ pub enum ScanError {
 ///
 /// `now` is injected so tests are deterministic; production passes
 /// `Utc::now()`.
+///
+/// Spanned so a scan is one trace: `metric_monitoring` is among the loudest
+/// untraced log targets on the worker, and a scan fans out one task per
+/// monitor (see [`scan_one`]) — without a common root those per-monitor lines
+/// cannot be told apart from a concurrent scan of another workspace.
+#[tracing::instrument(
+    target = "metric_monitoring",
+    name = "monitor_scan",
+    skip_all,
+    fields(config_path = %config_path.display(), granularity = ?granularity_filter)
+)]
 pub async fn scan_workspace(
     runner: Arc<dyn MetricTreeRunner>,
     config_path: &Path,
@@ -213,10 +225,16 @@ pub async fn scan_workspace(
     for entry in expanded {
         let runner = runner.clone();
         let continuation = open_events.get(&SegmentKey::for_entry(&entry)).copied();
-        set.spawn(async move {
-            let outcome = scan_one(runner, &entry, now, continuation).await;
-            (entry, outcome)
-        });
+        // `JoinSet::spawn` starts the task with no span, so without
+        // `in_current_span` each `monitor_scan_one` would arrive as an orphan
+        // root instead of a child of this `monitor_scan`.
+        set.spawn(
+            async move {
+                let outcome = scan_one(runner, &entry, now, continuation).await;
+                (entry, outcome)
+            }
+            .in_current_span(),
+        );
     }
 
     while let Some(join_result) = set.join_next().await {
@@ -249,6 +267,15 @@ pub async fn scan_workspace(
 }
 
 /// Run a single monitor end-to-end.
+///
+/// One child span per monitor, carrying the measure and grain — the two
+/// fields an operator filters by when one monitor is slow or failing.
+#[tracing::instrument(
+    target = "metric_monitoring",
+    name = "monitor_scan_one",
+    skip_all,
+    fields(measure = %entry.measure, granularity = ?entry.granularity)
+)]
 pub async fn scan_one(
     runner: Arc<dyn MetricTreeRunner>,
     entry: &MonitorEntry,

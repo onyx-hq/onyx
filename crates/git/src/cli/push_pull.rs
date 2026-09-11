@@ -59,7 +59,11 @@ pub async fn fetch_remote_ref(
     token: Option<&str>,
 ) -> Result<(), OxyError> {
     branch::validate_branch_name(branch)?;
-    info!("Fetching origin/{} in {}", branch, root.display());
+    // `debug`: the fetch-maintenance loop runs this per workspace on a timer,
+    // and at `info` it was the second-loudest line on `oxy-ide` (168 an hour in
+    // prod) while saying nothing on the path where nothing went wrong — a
+    // failure surfaces from `run_with_token` as an error with its own context.
+    tracing::debug!(branch, root = %root.display(), "fetching origin ref");
     run::run_with_token(root, &["fetch", "origin", branch], token).await?;
     Ok(())
 }

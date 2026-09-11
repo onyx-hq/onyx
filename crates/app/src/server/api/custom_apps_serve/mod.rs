@@ -63,6 +63,7 @@ use sea_orm::ColumnTrait;
 use sea_orm::DatabaseConnection;
 use sea_orm::EntityTrait;
 use sea_orm::QueryFilter;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use super::custom_apps_auth::user_can_access_app;
@@ -210,7 +211,32 @@ pub async fn serve_dispatch(Path(path): Path<String>, request: axum::extract::Re
     serve_pretty(first, app_slug, rest, method, headers, uri, body).await
 }
 
+/// The custom-app serve path, phase by phase.
+///
+/// The HTTP layer already produces one `GET /customer-apps/{*path}` span, and
+/// in prod it reports a p95 of 262ms
+/// (`internal-docs/2026-09-09-hyperdx-observability-findings.md` §8) with
+/// **nothing underneath it** — so the one question that span raises is the one
+/// it cannot answer. The phases below are each a child span because each is a
+/// different failure and a different fix: an auth round trip, a user lookup, a
+/// two-query app resolution, an access check, and the byte fetch itself. The
+/// user lookup and the app resolution only produce a span on a cache miss, so
+/// their presence in a trace is itself the diagnosis. The status code is not
+/// repeated here: the parent HTTP span carries it on every path, early exits
+/// included, which a field recorded at the bottom of this function would not.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(
+    target = "custom_apps_serve",
+    name = "custom_app_serve",
+    skip_all,
+    fields(
+        org_slug = %org_slug,
+        app_slug = %app_slug,
+        route = %rest,
+        app_id = tracing::field::Empty,
+        source = tracing::field::Empty,
+    )
+)]
 pub(crate) async fn serve_pretty(
     org_slug: &str,
     app_slug: &str,
@@ -229,7 +255,14 @@ pub(crate) async fn serve_pretty(
     //    real registered (org, app) pair (302 redirect) from a fake one
     //    (404). No DB work happens before we know the caller has a valid
     //    session.
-    let identity = match BuiltInAuthenticator::new().authenticate(&headers).await {
+    let identity = match BuiltInAuthenticator::new()
+        .authenticate(&headers)
+        .instrument(tracing::info_span!(
+            target: "custom_apps_serve",
+            "custom_app_authenticate"
+        ))
+        .await
+    {
         Ok(i) => i,
         Err(e) => {
             // Surface auth failures so an operator can tell apart "no cookie"
@@ -242,7 +275,11 @@ pub(crate) async fn serve_pretty(
                 .map(|s| s.contains("oxy_session="))
                 .unwrap_or(false);
             let auth_header_present = headers.get(axum::http::header::AUTHORIZATION).is_some();
-            tracing::warn!(
+            // `info`, not `warn`: an unauthenticated hit is the client doing
+            // something ordinary (a service-worker update check, a
+            // `version.json` poll, an expired session), and at `warn` it was a
+            // third of prod's warnings. The fields keep the diagnosis.
+            tracing::info!(
                 target: "custom_apps_serve",
                 org_slug = %org_slug,
                 app_slug = %app_slug,
@@ -263,7 +300,13 @@ pub(crate) async fn serve_pretty(
     let user = if let Some(u) = cached_user(&cache_key) {
         u
     } else {
-        match UserService::find_user_by_identity(&identity).await {
+        match UserService::find_user_by_identity(&identity)
+            .instrument(tracing::info_span!(
+                target: "custom_apps_serve",
+                "custom_app_user_lookup"
+            ))
+            .await
+        {
             Ok(Some(u)) => {
                 set_cached_user(cache_key, u.clone());
                 u
@@ -299,6 +342,10 @@ pub(crate) async fn serve_pretty(
             let org = match entity::prelude::Organizations::find()
                 .filter(entity::organizations::Column::Slug.eq(org_slug))
                 .one(&db)
+                .instrument(tracing::info_span!(
+                    target: "custom_apps_serve",
+                    "custom_app_resolve_org"
+                ))
                 .await
             {
                 Ok(Some(o)) => o,
@@ -313,6 +360,10 @@ pub(crate) async fn serve_pretty(
                 .filter(entity::apps::Column::OrgId.eq(org.id))
                 .filter(entity::apps::Column::Slug.eq(app_slug))
                 .one(&db)
+                .instrument(tracing::info_span!(
+                    target: "custom_apps_serve",
+                    "custom_app_resolve_app"
+                ))
                 .await
             {
                 Ok(Some(a)) => a,
@@ -335,23 +386,28 @@ pub(crate) async fn serve_pretty(
     // admin). Cached per (user_id, app_id) for 60s — see
     // `custom_apps_auth::user_can_access_app`. Critical for the Next.js
     // asset storm (30-100 requests per page load).
-    let allowed =
-        match user_can_access_app(&db, user.id, user.email.as_deref().unwrap_or(""), &app).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::error!("Access check failed for custom app {id}: {e}");
-                record_early_exit(
-                    &app,
-                    user.id,
-                    &headers,
-                    &rest,
-                    is_html_navigation(&rest),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    started,
-                );
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-            }
-        };
+    let allowed = match user_can_access_app(&db, user.id, user.email.as_deref().unwrap_or(""), &app)
+        .instrument(tracing::info_span!(
+            target: "custom_apps_serve",
+            "custom_app_authorize"
+        ))
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("Access check failed for custom app {id}: {e}");
+            record_early_exit(
+                &app,
+                user.id,
+                &headers,
+                &rest,
+                is_html_navigation(&rest),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                started,
+            );
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
     if !allowed {
         // A 403 is not an app fault and does not dent the SLI (see
         // `is_app_fault`), but it is still traffic this app served and an
@@ -453,88 +509,111 @@ pub(crate) async fn serve_pretty(
     };
 
     use super::custom_apps_source::AppSource;
-    let response = match source {
-        AppSource::V0 { url } => {
-            super::custom_apps_proxy::proxy(
-                &url,
-                &rest,
-                method,
-                &uri,
-                &headers,
-                body,
-                super::custom_apps_proxy::ProxyIdentity {
-                    app: &app,
-                    org: &org,
-                    user_id: user.id,
-                    user_email: user.email.as_deref().unwrap_or(""),
-                },
-            )
-            .await
-        }
-        AppSource::LocalFolder { path } => {
-            // LocalFolder has no draft/published split — one directory
-            // serves everyone. Publishing for these sources is purely a
-            // sidebar visibility toggle.
-            serve_from_local(id, &path, &rest, &headers, &runtime).await
-        }
-        AppSource::S3 => {
-            // The customer URL accepts no view modifier. Draft mode
-            // lives on a staff-only HttpOnly cookie set via
-            // `POST /api/customer-apps/preview-draft`. Customer's
-            // browser never carries this cookie; even if a customer
-            // forged it, `is_app_admin_email` denies them draft
-            // access below.
-            let cookie_wants_draft = super::custom_apps_preview::wants_draft_preview(&headers);
-            // Fail-closed inside the one reader: a lookup error reports no standing.
-            // Admin OR owner — both operator tiers reach every custom-app surface.
-            // Scoped to THIS app's org: a grant bounded elsewhere must not unlock the
-            // draft channel here. `is_staff()` would, and is now true for every role.
-            let is_staff = oxy_server_authz::globals::platform_reaches(
-                &db,
-                user.email.as_deref().unwrap_or(""),
-                oxy_authz::Cap::DevelopApps,
-                app.org_id,
-            )
-            .await;
-            let channel =
-                resolve_channel(cookie_wants_draft && is_staff, app.published_at.is_some());
-            // New publish pipeline: when the channel has a build pointer,
-            // serve straight from S3 (no local state dir). Legacy `s3`
-            // rows leave both pointers NULL and fall through to the
-            // state-dir path until they're re-published.
-            use super::custom_apps_sync::Channel;
-            let build_pk = match channel {
-                Channel::Draft => app.draft_build_id,
-                Channel::Published => app.published_build_id,
-            };
-            match build_pk {
-                Some(build_pk) => {
-                    // The runtime config was built ~100 lines above, before the
-                    // channel was known, so its `buildId` defaulted to the
-                    // PUBLISHED build. A staff draft preview of a published app
-                    // would then serve draft bytes and inject the published id:
-                    // an error thrown by draft code gets attributed to the wrong
-                    // build, `resolve_stack` fetches that build's maps, and the
-                    // lookups return plausible-but-wrong files and lines —
-                    // reported as `stack_resolved: true`, which is the one case
-                    // that flag exists to prevent. Draft preview is exactly when
-                    // someone is reading a stack.
-                    let mut runtime = runtime;
-                    runtime.build_id = build_pk.to_string();
-                    serve_from_s3_build(&db, id, build_pk, &rest, &runtime, &headers).await
-                }
-                None => {
-                    // Post-retirement: the legacy state-dir serve is gone.
-                    // An s3-source app with no build pointer hasn't been
-                    // published through the new pipeline yet (`oxy publish`).
-                    tracing::warn!(
-                        "app {id}: no build for {channel:?} channel — not yet published via `oxy publish`"
-                    );
-                    no_store_404()
+    // The app id and the backend that answered belong on the parent span:
+    // "which app, served from where" is how an operator slices a latency or
+    // error question before looking at any single request.
+    {
+        let span = tracing::Span::current();
+        span.record("app_id", tracing::field::display(id));
+        span.record(
+            "source",
+            match &source {
+                AppSource::V0 { .. } => "v0_proxy",
+                AppSource::LocalFolder { .. } => "local_folder",
+                AppSource::S3 => "s3",
+            },
+        );
+    }
+    let dispatch_span = tracing::info_span!(
+        target: "custom_apps_serve",
+        "custom_app_dispatch"
+    );
+    let response = async {
+        match source {
+            AppSource::V0 { url } => {
+                super::custom_apps_proxy::proxy(
+                    &url,
+                    &rest,
+                    method,
+                    &uri,
+                    &headers,
+                    body,
+                    super::custom_apps_proxy::ProxyIdentity {
+                        app: &app,
+                        org: &org,
+                        user_id: user.id,
+                        user_email: user.email.as_deref().unwrap_or(""),
+                    },
+                )
+                .await
+            }
+            AppSource::LocalFolder { path } => {
+                // LocalFolder has no draft/published split — one directory
+                // serves everyone. Publishing for these sources is purely a
+                // sidebar visibility toggle.
+                serve_from_local(id, &path, &rest, &headers, &runtime).await
+            }
+            AppSource::S3 => {
+                // The customer URL accepts no view modifier. Draft mode
+                // lives on a staff-only HttpOnly cookie set via
+                // `POST /api/customer-apps/preview-draft`. Customer's
+                // browser never carries this cookie; even if a customer
+                // forged it, `is_app_admin_email` denies them draft
+                // access below.
+                let cookie_wants_draft = super::custom_apps_preview::wants_draft_preview(&headers);
+                // Fail-closed inside the one reader: a lookup error reports no standing.
+                // Admin OR owner — both operator tiers reach every custom-app surface.
+                // Scoped to THIS app's org: a grant bounded elsewhere must not unlock the
+                // draft channel here. `is_staff()` would, and is now true for every role.
+                let is_staff = oxy_server_authz::globals::platform_reaches(
+                    &db,
+                    user.email.as_deref().unwrap_or(""),
+                    oxy_authz::Cap::DevelopApps,
+                    app.org_id,
+                )
+                .await;
+                let channel =
+                    resolve_channel(cookie_wants_draft && is_staff, app.published_at.is_some());
+                // New publish pipeline: when the channel has a build pointer,
+                // serve straight from S3 (no local state dir). Legacy `s3`
+                // rows leave both pointers NULL and fall through to the
+                // state-dir path until they're re-published.
+                use super::custom_apps_sync::Channel;
+                let build_pk = match channel {
+                    Channel::Draft => app.draft_build_id,
+                    Channel::Published => app.published_build_id,
+                };
+                match build_pk {
+                    Some(build_pk) => {
+                        // The runtime config was built ~100 lines above, before the
+                        // channel was known, so its `buildId` defaulted to the
+                        // PUBLISHED build. A staff draft preview of a published app
+                        // would then serve draft bytes and inject the published id:
+                        // an error thrown by draft code gets attributed to the wrong
+                        // build, `resolve_stack` fetches that build's maps, and the
+                        // lookups return plausible-but-wrong files and lines —
+                        // reported as `stack_resolved: true`, which is the one case
+                        // that flag exists to prevent. Draft preview is exactly when
+                        // someone is reading a stack.
+                        let mut runtime = runtime;
+                        runtime.build_id = build_pk.to_string();
+                        serve_from_s3_build(&db, id, build_pk, &rest, &runtime, &headers).await
+                    }
+                    None => {
+                        // Post-retirement: the legacy state-dir serve is gone.
+                        // An s3-source app with no build pointer hasn't been
+                        // published through the new pipeline yet (`oxy publish`).
+                        tracing::warn!(
+                            "app {id}: no build for {channel:?} channel — not yet published via `oxy publish`"
+                        );
+                        no_store_404()
+                    }
                 }
             }
         }
-    };
+    }
+    .instrument(dispatch_span)
+    .await;
 
     // Post-dispatch: for browser-navigation requests only (root /
     // trailing-slash / `.html`), stamp the session cookie on the

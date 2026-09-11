@@ -301,6 +301,7 @@ fn peer_ip_from_request<B>(req: &Request<B>) -> Option<String> {
     if let Some(h) = req.headers().get("x-edge-tailscale-ip")
         && let Ok(s) = h.to_str()
         && let Some(ip) = parse_literal_ip(s.trim())
+        && is_dialable(&ip)
     {
         return Some(ip);
     }
@@ -312,9 +313,17 @@ fn peer_ip_from_request<B>(req: &Request<B>) -> Option<String> {
         // the value flows into `service::preview::upstream_base`
         // which builds `https://{ip}:port`, so a hostname or
         // URL-meaningful character here would be SSRF.
-        let last = s.split(',').next_back()?.trim();
-        if let Some(ip) = parse_literal_ip(last) {
-            return Some(ip);
+        //
+        // Loopback hops are a local proxy on the box's side, not the box:
+        // step past them to the next hop. A hop that is not an IP literal
+        // still ends the walk — skipping it would let a caller put anything
+        // it likes further left.
+        for hop in s.split(',').rev() {
+            match parse_literal_ip(hop.trim()) {
+                Some(ip) if is_dialable(&ip) => return Some(ip),
+                Some(_) => continue,
+                None => break,
+            }
         }
     }
     // Socket peer via `ConnectInfo<SocketAddr>`. Inserted into
@@ -329,9 +338,9 @@ fn peer_ip_from_request<B>(req: &Request<B>) -> Option<String> {
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
     {
-        let ip = ci.0.ip();
-        if !ip.is_loopback() && !ip.is_unspecified() {
-            return Some(ip.to_string());
+        let ip = ci.0.ip().to_string();
+        if is_dialable(&ip) {
+            return Some(ip);
         }
     }
     None
@@ -352,6 +361,29 @@ fn parse_literal_ip(s: &str) -> Option<String> {
         .parse::<std::net::IpAddr>()
         .ok()
         .map(|ip| ip.to_string())
+}
+
+/// Whether Oxy could ever dial this address back. Loopback and unspecified
+/// never are — the `ConnectInfo` fallback already refused them, but the two
+/// header sources did not, so a box whose calls arrive by two paths (directly,
+/// and through a local proxy that stamps `127.0.0.1`) flipped `tailscale_ip`
+/// between them on every request: 130 row writes and log lines an hour from
+/// one box in prod on 2026-09-10, and a snapshot proxy dialling localhost half
+/// the time.
+///
+/// Link-local is refused too (`169.254.0.0/16`, `fe80::/10`): never a box's
+/// reachable address, and the value becomes `https://{ip}:port` in
+/// `service::preview::upstream_base`, where `169.254.169.254` is the cloud
+/// metadata service.
+fn is_dialable(ip: &str) -> bool {
+    use std::net::IpAddr;
+    ip.parse::<IpAddr>().is_ok_and(|ip| {
+        let link_local = match ip {
+            IpAddr::V4(v4) => v4.is_link_local(),
+            IpAddr::V6(v6) => v6.is_unicast_link_local(),
+        };
+        !ip.is_loopback() && !ip.is_unspecified() && !link_local
+    })
 }
 
 /// Extract the box's Tailscale Funnel hostname from the inbound
@@ -534,6 +566,47 @@ mod tests {
         // box. Match production behavior by returning None.
         let r = req_with_extensions(Some("127.0.0.1:55555".parse().unwrap()), None, None);
         assert!(peer_ip_from_request(&r).is_none());
+    }
+
+    #[test]
+    fn peer_ip_ignores_undialable_addresses_so_a_proxied_box_does_not_flap() {
+        // Loopback / unspecified: a local proxy on the box's side. Link-local:
+        // never reachable, and 169.254.169.254 is the cloud metadata service.
+        for undialable in ["127.0.0.1", "::1", "0.0.0.0", "169.254.169.254", "fe80::1"] {
+            let r = req_with_extensions(None, None, Some(undialable));
+            assert!(
+                peer_ip_from_request(&r).is_none(),
+                "x-edge-tailscale-ip {undialable} is not dialable"
+            );
+            let r = req_with_extensions(None, Some(&format!("203.0.113.9, {undialable}")), None);
+            assert_eq!(
+                peer_ip_from_request(&r).as_deref(),
+                Some("203.0.113.9"),
+                "an undialable {undialable} last hop is skipped; the hop before it is the box"
+            );
+            let socket = if undialable.contains(':') {
+                format!("[{undialable}]:1")
+            } else {
+                format!("{undialable}:1")
+            };
+            let r = req_with_extensions(Some(socket.parse().unwrap()), None, None);
+            assert!(
+                peer_ip_from_request(&r).is_none(),
+                "a {undialable} socket peer is refused too"
+            );
+        }
+        let r = req_with_extensions(None, Some("evil.com, 127.0.0.1"), None);
+        assert!(
+            peer_ip_from_request(&r).is_none(),
+            "stepping past loopback never reaches a hostname"
+        );
+        // The fallback to the real peer still applies.
+        let r = req_with_extensions(
+            Some("100.64.1.42:1".parse().unwrap()),
+            Some("127.0.0.1"),
+            None,
+        );
+        assert_eq!(peer_ip_from_request(&r).as_deref(), Some("100.64.1.42"));
     }
 
     #[test]

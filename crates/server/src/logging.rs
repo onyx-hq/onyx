@@ -9,6 +9,7 @@
 //! | stderr, human-readable        | `LogFormat::Local`              | `OXY_LOG_LEVEL` (default `warn`) |
 //! | `oxy.<date>.log` in state dir | `LogFormat::Local`              | same                            |
 //! | stderr, one JSON object/line  | `LogFormat::Cloud`              | same                            |
+//! | stray stderr → JSON           | `LogFormat::Cloud`, server commands, unless `OXY_STDERR_CAPTURE=off` | none: every line, repeats collapsed |
 //! | product observability spans   | `OXY_OBSERVABILITY_BACKEND` set | `oxy_observability` filter      |
 //! | OpenTelemetry context: ids, `traceparent` | `serve` / `start` / `worker`, unless `OTEL_SDK_DISABLED` | `OXY_OTEL_FILTER` (default `info`) |
 //! | OTLP traces (+ logs, opt-in)  | …and `OTEL_EXPORTER_OTLP_ENDPOINT` | same                            |
@@ -119,13 +120,19 @@ fn local_file_writer() -> Option<tracing_appender::non_blocking::NonBlocking> {
 /// Install the subscriber. Returns anything that went wrong bringing up the
 /// OTLP exporters, for the caller to log once `tracing` is live — a broken
 /// collector configuration must never stop the process from starting.
-pub fn init(observability_enabled: bool, otel: &OtelConfig) -> Vec<String> {
+///
+/// `server_command` gates the stderr capture: it holds lines in a pipe until a
+/// reader thread writes them, and only the server path drains that pipe at
+/// exit (`oxy_telemetry::stderr_capture::finish` in `main`). A one-shot command
+/// that calls `process::exit` from deep inside could lose its last lines.
+pub fn init(observability_enabled: bool, otel: &OtelConfig, server_command: bool) -> Vec<String> {
     let log_format = LogFormat::detect();
     let directives = stderr_directives();
     // EnvFilter is not Clone; rebuild it from the same string per layer.
     let make_filter = || EnvFilter::new(&directives);
 
     let mut layers: Vec<BoxedLayer> = Vec::new();
+    let mut problems: Vec<String> = Vec::new();
     let mut json_dispatch: Option<oxy_telemetry::with_dispatch::DispatchHandle> = None;
     layers.push(Box::new(
         sentry::integrations::tracing::layer().with_filter(LevelFilter::WARN),
@@ -168,8 +175,28 @@ pub fn init(observability_enabled: bool, otel: &OtelConfig) -> Vec<String> {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| oxy_telemetry::resource::service_name_for_role(otel.role));
-            let (json, handle) = oxy_telemetry::json_format::layer(Some(service), std::io::stderr);
-            layers.push(Box::new(json.with_filter(make_filter())));
+            // Everything else that writes to fd 2 — airlayer's `eprintln!`
+            // warnings, C libraries, the panic hook — is rewritten into the
+            // same JSON shape by `stderr_capture`; our own layer then writes to
+            // the original descriptor so its lines never queue behind the pipe.
+            let capture = if server_command && oxy_telemetry::stderr_capture::enabled_by_env() {
+                install_stderr_capture(&service, &mut problems)
+            } else {
+                None
+            };
+            let handle = match capture {
+                Some(writer) => {
+                    let (json, handle) = oxy_telemetry::json_format::layer(Some(service), writer);
+                    layers.push(Box::new(json.with_filter(make_filter())));
+                    handle
+                }
+                None => {
+                    let (json, handle) =
+                        oxy_telemetry::json_format::layer(Some(service), std::io::stderr);
+                    layers.push(Box::new(json.with_filter(make_filter())));
+                    handle
+                }
+            };
             json_dispatch = Some(handle);
         }
     }
@@ -202,5 +229,28 @@ pub fn init(observability_enabled: bool, otel: &OtelConfig) -> Vec<String> {
     if let Some(handle) = json_dispatch {
         tracing::dispatcher::get_default(|dispatch| handle.bind(dispatch));
     }
-    otel_layers.problems
+    problems.extend(otel_layers.problems);
+    problems
+}
+
+#[cfg(unix)]
+fn install_stderr_capture(
+    service: &str,
+    problems: &mut Vec<String>,
+) -> Option<oxy_telemetry::stderr_capture::StderrCapture> {
+    match oxy_telemetry::stderr_capture::install(Some(service.to_string())) {
+        Ok(capture) => Some(capture.writer()),
+        Err(e) => {
+            problems.push(format!("stderr capture not installed: {e}"));
+            None
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn install_stderr_capture(
+    _service: &str,
+    _problems: &mut Vec<String>,
+) -> Option<fn() -> std::io::Stderr> {
+    None
 }

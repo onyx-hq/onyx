@@ -87,6 +87,11 @@ pub async fn start_brief_pipeline(
         agent.prompt = %params.question,
         question = %params.question,
     );
+    // A root for the product console (`ParentSpanId = ''`), but not an
+    // orphan in HyperDX: `follows_from` becomes an OpenTelemetry span link to
+    // whatever started the run — the HTTP request, or the `agentic_task` a
+    // worker claimed — so the trace view can step from one to the other.
+    run_span.follows_from(tracing::Span::current());
 
     let join = tokio::spawn(
         async move {

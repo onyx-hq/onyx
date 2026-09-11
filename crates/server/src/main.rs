@@ -153,7 +153,7 @@ fn main() {
             if command.is_none() {
                 otel.sdk_disabled = true;
             }
-            let telemetry_problems = logging::init(observability_enabled, &otel);
+            let telemetry_problems = logging::init(observability_enabled, &otel, command.is_some());
             for problem in telemetry_problems {
                 tracing::warn!(%problem, "platform telemetry degraded");
             }
@@ -215,6 +215,11 @@ fn main() {
                 }
                 Err(e) => eprintln!("oxy: OTLP exporter shutdown did not complete: {e}"),
             }
+
+            // Truly last: point fd 2 back at the real stderr and let the
+            // capture thread write out whatever stray lines are still queued
+            // (the `eprintln!`s just above included).
+            oxy_telemetry::stderr_capture::finish(std::time::Duration::from_secs(2));
 
             if exit_code != 0 {
                 exit(exit_code);

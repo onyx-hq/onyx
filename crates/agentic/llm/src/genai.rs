@@ -12,16 +12,14 @@
 //! *Development*, no tagged release yet — so a rename upstream is a deliberate
 //! edit here, never an implicit one). Everything **Required** and
 //! **Recommended** for an inference span is emitted when the provider knows
-//! it; the **Opt-In** content attributes (`gen_ai.input.messages`,
-//! `gen_ai.system_instructions`, `gen_ai.output.messages`) are recorded only
-//! when [`CAPTURE_CONTENT_ENV`] is `true` — off by default, because a prompt
-//! carries tenant data and the span lands in **two** stores: the platform
-//! trace store behind the OTel collector (where a `transform` processor can
-//! strip content again) and the tenant-visible product store, which
-//! `oxy-observability` writes directly with no collector in the path. Opting
-//! in is therefore a decision about the tenant console, not only HyperDX.
-//! Even when on, tool-call arguments and tool results are stripped from both
-//! the input history and the output ([`redact_tool_payloads`]).
+//! it. The content attributes the convention marks **Opt-In**
+//! (`gen_ai.input.messages`, `gen_ai.system_instructions`,
+//! `gen_ai.output.messages`) are **always** recorded, tool-call arguments and
+//! tool results included: "what did the model see, and what did it ask the
+//! tool to run" is the question an LLM span exists to answer, and a span that
+//! can only say *that* a call happened cannot answer it. Each attribute is
+//! capped at [`CONTENT_MAX_BYTES`]. A failed request records the provider's
+//! message on `oxy.error.message` beside the low-cardinality `error.type`.
 //!
 //! [`observe`] is the only place usage, finish reason, time-to-first-chunk and
 //! the error class are recorded, so the three call sites in [`LlmClient`]
@@ -30,24 +28,19 @@
 //! [`LlmClient`]: crate::LlmClient
 
 use std::pin::Pin;
-use std::sync::OnceLock;
 use std::time::Instant;
 
 use futures_core::Stream;
 use tracing::{Span, field::Empty};
 
-use crate::{Chunk, LlmError, LlmProvider, StopReason, Usage};
+use crate::{Chunk, LlmError, LlmProvider, StopReason, ToolCallChunk, Usage};
 
 /// `gen_ai.operation.name` for every call this crate makes: all three
 /// providers speak a chat-completion shaped API, tool calls included.
 pub const OPERATION_CHAT: &str = "chat";
 
-/// Environment variable that turns on the Opt-In content attributes. Any
-/// value other than `true` / `1` (case-insensitive) leaves them off.
-pub const CAPTURE_CONTENT_ENV: &str = "OXY_GENAI_CAPTURE_CONTENT";
-
-/// Upper bound on a captured content attribute, so an opted-in deployment
-/// never ships a multi-megabyte history on one span.
+/// Upper bound on a captured content attribute, so one span never carries a
+/// multi-megabyte history (a tool result can be a page of rows).
 pub const CONTENT_MAX_BYTES: usize = 64 * 1024;
 
 /// A chunk stream as returned by [`LlmProvider::stream`].
@@ -85,16 +78,6 @@ pub(crate) struct InferenceRequest<'a> {
     /// Tool-loop bookkeeping; `None` on the single-shot paths.
     pub state: Option<&'a str>,
     pub round: Option<u32>,
-}
-
-/// Whether the Opt-In content attributes are recorded. Read once per process.
-pub fn content_capture_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var(CAPTURE_CONTENT_ENV)
-            .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
-            .unwrap_or(false)
-    })
 }
 
 /// The semconv provider name for an endpoint host, falling back to
@@ -174,6 +157,9 @@ pub(crate) fn inference_span(
         server.address = Empty,
         server.port = Empty,
         error.type = Empty,
+        oxy.error.message = Empty,
+        oxy.gen_ai.output.bytes = Empty,
+        oxy.gen_ai.output.tool_calls_dropped = Empty,
         oxy.org_id = Empty,
         oxy.workspace_id = Empty,
         oxy.project_id = Empty,
@@ -198,12 +184,9 @@ pub(crate) fn inference_span(
         span.record("llm.round", u64::from(round));
     }
     record_context(&span, ctx);
-    if content_capture_enabled() {
-        span.record("gen_ai.system_instructions", truncated(req.system).as_str());
-        let messages =
-            serde_json::to_string(&redact_tool_payloads(req.messages)).unwrap_or_default();
-        span.record("gen_ai.input.messages", truncated(&messages).as_str());
-    }
+    span.record("gen_ai.system_instructions", truncated(req.system).as_str());
+    let messages = serde_json::to_string(req.messages).unwrap_or_default();
+    span.record("gen_ai.input.messages", truncated(&messages).as_str());
     span
 }
 
@@ -228,15 +211,15 @@ fn record_context(span: &Span, ctx: &GenAiContext) {
 /// Wrap a provider stream so the span learns what the response was: time to
 /// first chunk (measured from `started`, taken *before* the request was
 /// sent, so connect, upload and provider queueing count), usage and finish
-/// reason on `Done`, the error class on `Err`, and (opt-in) the output
-/// messages once the stream ends. Chunks pass through untouched.
+/// reason on `Done`, the error on `Err`, and the output messages once the
+/// stream ends. Chunks pass through untouched.
 pub(crate) fn observe(span: Span, started: Instant, inner: ChunkStream) -> ChunkStream {
-    let capture = content_capture_enabled();
     Box::pin(async_stream::stream! {
         use tokio_stream::StreamExt as _;
         let mut first = true;
-        let mut text = String::new();
-        let mut tool_names: Vec<String> = Vec::new();
+        // A disabled span records nothing, so it buffers nothing either.
+        let capture = !span.is_disabled();
+        let mut output = OutputBuffer::default();
         let mut inner = inner;
         while let Some(item) = inner.next().await {
             if first {
@@ -248,23 +231,116 @@ pub(crate) fn observe(span: Span, started: Instant, inner: ChunkStream) -> Chunk
             }
             match &item {
                 Ok(Chunk::Done(usage)) => record_usage(&span, usage),
-                Ok(Chunk::Text(t)) if capture => text.push_str(t),
-                Ok(Chunk::ToolCall(tc)) if capture => tool_names.push(tc.name.clone()),
+                Ok(Chunk::Text(t)) if capture => output.push_text(t),
+                Ok(Chunk::ToolCall(tc)) if capture => output.push_tool_call(tc),
                 Err(e) => record_error(&span, e),
                 _ => {}
             }
             yield item;
         }
         if capture {
-            let out = output_messages(&text, &tool_names);
-            span.record("gen_ai.output.messages", truncated(&out).as_str());
+            let out = output.finish();
+            span.record("gen_ai.output.messages", out.messages.as_str());
+            span.record("oxy.gen_ai.output.bytes", out.text_bytes as u64);
+            if out.tool_calls_dropped > 0 {
+                span.record(
+                    "oxy.gen_ai.output.tool_calls_dropped",
+                    out.tool_calls_dropped as u64,
+                );
+            }
         }
     })
+}
+
+/// What `observe` keeps of a response for `gen_ai.output.messages`.
+///
+/// Only [`CONTENT_MAX_BYTES`] of the attribute is ever recorded, so buffering a
+/// long builder response in full just to cut it would hold megabytes per call
+/// for nothing. Text stops accumulating at the cap and tool calls stop being
+/// kept once the budget is spent — but the true text size and the number of
+/// tool calls not kept are counted, and leave as **their own span fields**
+/// (`oxy.gen_ai.output.bytes`, `oxy.gen_ai.output.tool_calls_dropped`). A
+/// marker inside the attribute cannot carry them: the JSON envelope pushes a
+/// capped response past the cap, and whatever cuts it removes the marker too.
+#[derive(Default)]
+struct OutputBuffer {
+    text: String,
+    text_bytes_seen: usize,
+    tool_calls: Vec<ToolCallChunk>,
+    tool_call_bytes: usize,
+    tool_calls_dropped: usize,
+}
+
+impl OutputBuffer {
+    fn push_text(&mut self, t: &str) {
+        self.text_bytes_seen += t.len();
+        let room = CONTENT_MAX_BYTES.saturating_sub(self.text.len());
+        if room == 0 {
+            return;
+        }
+        let take = t
+            .char_indices()
+            .map(|(i, c)| i + c.len_utf8())
+            .take_while(|end| *end <= room)
+            .last()
+            .unwrap_or(0);
+        self.text.push_str(&t[..take]);
+    }
+
+    fn push_tool_call(&mut self, tc: &ToolCallChunk) {
+        let size = tc.name.len() + tc.input.to_string().len();
+        if self.text.len() + self.tool_call_bytes + size > CONTENT_MAX_BYTES {
+            self.tool_calls_dropped += 1;
+            return;
+        }
+        self.tool_call_bytes += size;
+        self.tool_calls.push(tc.clone());
+    }
+
+    fn finish(self) -> OutputAttributes {
+        let json = output_messages(&self.text, &self.tool_calls);
+        let text_capped = self.text_bytes_seen > self.text.len();
+        // Valid JSON when everything kept fits and no text was cut; otherwise
+        // cut at the cap with a marker that names the *response* size, not the
+        // length of the envelope around what was kept.
+        let messages = if !text_capped && json.len() <= CONTENT_MAX_BYTES {
+            json
+        } else {
+            let cut = json
+                .char_indices()
+                .map(|(i, c)| i + c.len_utf8())
+                .take_while(|end| *end <= CONTENT_MAX_BYTES)
+                .last()
+                .unwrap_or(0);
+            format!(
+                "{}… (cut at {} bytes; response text was {} bytes)",
+                &json[..cut],
+                CONTENT_MAX_BYTES,
+                self.text_bytes_seen
+            )
+        };
+        OutputAttributes {
+            messages,
+            text_bytes: self.text_bytes_seen,
+            tool_calls_dropped: self.tool_calls_dropped,
+        }
+    }
+}
+
+/// The three values `observe` records from a finished response.
+struct OutputAttributes {
+    /// `gen_ai.output.messages`.
+    messages: String,
+    /// `oxy.gen_ai.output.bytes`: streamed text bytes, all of them.
+    text_bytes: usize,
+    /// `oxy.gen_ai.output.tool_calls_dropped`: tool calls past the budget.
+    tool_calls_dropped: usize,
 }
 
 /// Record the failure of the request itself (before any chunk arrived).
 pub(crate) fn record_error(span: &Span, err: &LlmError) {
     span.record("error.type", error_type(err));
+    span.record("oxy.error.message", truncated(&err.to_string()).as_str());
     span.record("otel.status_code", "ERROR");
 }
 
@@ -311,84 +387,21 @@ pub fn error_type(err: &LlmError) -> &'static str {
     }
 }
 
-/// Objects in a provider-native history that carry a tool's arguments or
-/// result. Anthropic (`tool_use` / `tool_result`), OpenAI Chat
-/// (`tool_calls[].type = "function"`, `role = "tool"`), OpenAI Responses
-/// (`function_call` / `function_call_output`) and the semconv shapes.
-const TOOL_PAYLOAD_TYPES: &[&str] = &[
-    "tool_use",
-    "tool_result",
-    "function",
-    "function_call",
-    "function_call_output",
-    "tool_call",
-    "tool_call_response",
-];
-
-/// The identifiers a redacted tool object keeps.
-const TOOL_IDENTIFIER_KEYS: &[&str] = &[
-    "type",
-    "role",
-    "id",
-    "name",
-    "call_id",
-    "tool_use_id",
-    "tool_call_id",
-];
-
-/// Strip tool-call arguments and tool results from a provider-native message
-/// history, keeping roles, text and tool *names*. Round N+1's input replays
-/// round N's tool traffic verbatim, so without this the output redaction
-/// would buy nothing past the first round.
-pub fn redact_tool_payloads(messages: &[serde_json::Value]) -> serde_json::Value {
-    serde_json::Value::Array(messages.iter().map(redact_value).collect())
-}
-
-fn redact_value(v: &serde_json::Value) -> serde_json::Value {
-    use serde_json::Value;
-    match v {
-        Value::Array(items) => Value::Array(items.iter().map(redact_value).collect()),
-        Value::Object(map) => {
-            let ty = map.get("type").and_then(Value::as_str).unwrap_or("");
-            let role = map.get("role").and_then(Value::as_str).unwrap_or("");
-            if TOOL_PAYLOAD_TYPES.contains(&ty) || role == "tool" {
-                let mut out = serde_json::Map::new();
-                for key in TOOL_IDENTIFIER_KEYS {
-                    if let Some(x) = map.get(*key) {
-                        out.insert((*key).to_string(), x.clone());
-                    }
-                }
-                if let Some(name) = map
-                    .get("function")
-                    .and_then(Value::as_object)
-                    .and_then(|f| f.get("name"))
-                {
-                    out.insert("function".into(), serde_json::json!({ "name": name }));
-                }
-                out.insert("redacted".into(), Value::Bool(true));
-                Value::Object(out)
-            } else {
-                Value::Object(
-                    map.iter()
-                        .map(|(k, v)| (k.clone(), redact_value(v)))
-                        .collect(),
-                )
-            }
-        }
-        other => other.clone(),
-    }
-}
-
 /// `gen_ai.output.messages` in the convention's role/parts shape, built from
-/// what the stream yielded. Tool calls carry the name only: arguments are
-/// tenant data even when content capture is on.
-fn output_messages(text: &str, tool_names: &[String]) -> String {
+/// what the stream yielded: the text, and each tool call with its id, name
+/// and arguments.
+fn output_messages(text: &str, tool_calls: &[ToolCallChunk]) -> String {
     let mut parts: Vec<serde_json::Value> = Vec::new();
     if !text.is_empty() {
         parts.push(serde_json::json!({"type": "text", "content": text}));
     }
-    for name in tool_names {
-        parts.push(serde_json::json!({"type": "tool_call", "name": name}));
+    for tc in tool_calls {
+        parts.push(serde_json::json!({
+            "type": "tool_call",
+            "id": tc.id,
+            "name": tc.name,
+            "arguments": tc.input,
+        }));
     }
     serde_json::json!([{"role": "assistant", "parts": parts}]).to_string()
 }
@@ -573,14 +586,15 @@ mod tests {
         // The product layer's vocabulary rides on the same span.
         assert_eq!(f["oxy.name"], "llm.call");
         assert_eq!(f["oxy.span_type"], "llm");
-        // Content is Opt-In and the env is unset here.
-        assert!(!f.contains_key("gen_ai.input.messages"));
-        assert!(!f.contains_key("gen_ai.system_instructions"));
-        assert!(!f.contains_key("gen_ai.output.messages"));
+        // Content is always captured.
+        assert_eq!(f["gen_ai.system_instructions"], "be brief");
+        assert_eq!(f["gen_ai.input.messages"], "[]");
+        let out: serde_json::Value = serde_json::from_str(&f["gen_ai.output.messages"]).unwrap();
+        assert_eq!(out[0]["parts"][0]["content"], "hi");
     }
 
     #[tokio::test]
-    async fn a_failed_stream_records_the_error_class_not_the_message() {
+    async fn a_failed_stream_records_the_error_class_and_the_message() {
         let cap = Capture::default();
         let subscriber = Registry::default().with(cap.clone());
         let _guard = tracing::subscriber::set_default(subscriber);
@@ -610,7 +624,10 @@ mod tests {
         assert_eq!(f["otel.status_code"], "ERROR");
         assert!(!f.contains_key("gen_ai.request.max_tokens"));
         assert!(!f.contains_key("gen_ai.output.type"));
-        assert!(!f.values().any(|v| v.contains("secret-tenant-detail")));
+        assert!(
+            f["oxy.error.message"].contains("secret-tenant-detail"),
+            "the provider's message is what makes a failed call debuggable: {f:?}"
+        );
     }
 
     #[test]
@@ -667,57 +684,89 @@ mod tests {
         assert_eq!(truncated("short"), "short");
     }
 
-    #[test]
-    fn input_history_keeps_text_and_tool_names_but_never_arguments_or_results() {
-        let history = vec![
-            serde_json::json!({"role": "user", "content": "How many orders?"}),
-            // Anthropic shape
-            serde_json::json!({"role": "assistant", "content": [
-                {"type": "text", "text": "Let me check."},
-                {"type": "tool_use", "id": "tu_1", "name": "run_sql", "input": {"sql": "select secret from t"}}
-            ]}),
-            serde_json::json!({"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "tu_1", "content": [{"type": "text", "text": "42 rows of PII"}]}
-            ]}),
-            // OpenAI Chat shape
-            serde_json::json!({"role": "assistant", "tool_calls": [
-                {"id": "call_1", "type": "function", "function": {"name": "run_sql", "arguments": "{\"sql\":\"select ssn\"}"}}
-            ]}),
-            serde_json::json!({"role": "tool", "tool_call_id": "call_1", "content": "ssn=123"}),
-            // OpenAI Responses shape
-            serde_json::json!({"type": "function_call", "id": "fc_1", "call_id": "c1", "name": "run_sql", "arguments": "{\"sql\":\"x\"}"}),
-            serde_json::json!({"type": "function_call_output", "call_id": "c1", "output": "leak"}),
-        ];
-        let out = redact_tool_payloads(&history);
-        let text = out.to_string();
-        for leaked in [
-            "secret",
-            "PII",
-            "ssn",
-            "leak",
-            "arguments",
-            "\"input\"",
-            "\"output\"",
-        ] {
-            assert!(!text.contains(leaked), "{leaked} survived: {text}");
-        }
-        assert!(text.contains("How many orders?"));
-        assert!(text.contains("Let me check."));
-        assert!(text.contains("run_sql"), "tool names stay");
-        assert_eq!(out[1]["content"][1]["redacted"], true);
-        assert_eq!(out[3]["tool_calls"][0]["function"]["name"], "run_sql");
-        assert_eq!(out[4]["tool_call_id"], "call_1");
-        assert!(out[4].get("content").is_none());
-        assert_eq!(out[6]["call_id"], "c1");
+    /// Drive `observe` over `items` under a capturing subscriber and return
+    /// the `llm_round` span's recorded fields — what HyperDX would receive.
+    async fn recorded_output(items: Vec<Result<Chunk, LlmError>>) -> HashMap<String, String> {
+        let cap = Capture::default();
+        let subscriber = Registry::default().with(cap.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let req = InferenceRequest {
+            system: "",
+            messages: &[],
+            max_tokens: None,
+            tool_count: 0,
+            structured_output: false,
+            state: None,
+            round: None,
+        };
+        let span = inference_span(&FakeProvider, &GenAiContext::default(), &req);
+        let mut s = observe(span, Instant::now(), chunks(items));
+        use tokio_stream::StreamExt as _;
+        while s.next().await.is_some() {}
+        let all = cap.0.lock().unwrap();
+        all["llm_round"].clone()
+    }
+
+    #[tokio::test]
+    async fn a_long_response_records_its_true_size_where_no_cut_can_remove_it() {
+        let chunk = "é".repeat(1024); // 2 bytes per char
+        let items: Vec<_> = (0..200).map(|_| Ok(Chunk::Text(chunk.clone()))).collect();
+        let f = recorded_output(items).await;
+        let total = 200 * chunk.len();
+        assert_eq!(f["oxy.gen_ai.output.bytes"], total.to_string());
+        let messages = &f["gen_ai.output.messages"];
+        assert!(
+            messages.ends_with(&format!(
+                "… (cut at {CONTENT_MAX_BYTES} bytes; response text was {total} bytes)"
+            )),
+            "the recorded attribute names the response size, not the envelope's: {}",
+            &messages[messages.len().saturating_sub(120)..]
+        );
+        assert!(messages.len() < CONTENT_MAX_BYTES + 128);
+        assert!(!f.contains_key("oxy.gen_ai.output.tool_calls_dropped"));
+    }
+
+    #[tokio::test]
+    async fn tool_calls_past_the_budget_are_counted_on_the_span_and_the_rest_stays_valid_json() {
+        let big = ToolCallChunk {
+            id: "t".into(),
+            name: "run_sql".into(),
+            input: serde_json::json!({ "sql": "x".repeat(CONTENT_MAX_BYTES / 2) }),
+            provider_data: None,
+        };
+        let items = (0..3).map(|_| Ok(Chunk::ToolCall(big.clone()))).collect();
+        let f = recorded_output(items).await;
+        assert_eq!(f["oxy.gen_ai.output.tool_calls_dropped"], "2");
+        let v: serde_json::Value = serde_json::from_str(&f["gen_ai.output.messages"])
+            .expect("what was kept fits, so the attribute is still JSON");
+        assert_eq!(v[0]["parts"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_short_response_is_recorded_whole() {
+        let f = recorded_output(vec![Ok(Chunk::Text("hello".into()))]).await;
+        assert_eq!(f["oxy.gen_ai.output.bytes"], "5");
+        let v: serde_json::Value = serde_json::from_str(&f["gen_ai.output.messages"]).unwrap();
+        assert_eq!(v[0]["parts"][0]["content"], "hello");
     }
 
     #[test]
-    fn output_messages_carry_tool_names_only() {
-        let out = output_messages("hello", &["get_weather".into()]);
+    fn output_messages_carry_tool_calls_with_their_arguments() {
+        let call = ToolCallChunk {
+            id: "tu_1".into(),
+            name: "run_sql".into(),
+            input: serde_json::json!({"sql": "select count(*) from orders"}),
+            provider_data: None,
+        };
+        let out = output_messages("hello", &[call]);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v[0]["role"], "assistant");
         assert_eq!(v[0]["parts"][0]["content"], "hello");
-        assert_eq!(v[0]["parts"][1]["name"], "get_weather");
-        assert!(v[0]["parts"][1].get("arguments").is_none());
+        assert_eq!(v[0]["parts"][1]["id"], "tu_1");
+        assert_eq!(v[0]["parts"][1]["name"], "run_sql");
+        assert_eq!(
+            v[0]["parts"][1]["arguments"]["sql"],
+            "select count(*) from orders"
+        );
     }
 }

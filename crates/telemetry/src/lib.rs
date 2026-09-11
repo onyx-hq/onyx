@@ -19,6 +19,7 @@
 //! | [`json_format`] | The stderr JSON line: flat fields, `trace_id` / `span_id`, current span |
 //! | [`http_trace`]  | One `SERVER` span per HTTP request, named by route, W3C parent honoured |
 //! | [`propagation`] | `traceparent` injection for the internal serve → ide hop               |
+//! | [`stderr_capture`] | Every stray stderr line (dependencies, C libs, panics) as JSON, repeats collapsed |
 //!
 //! ## Configuration is the OpenTelemetry environment contract
 //!
@@ -44,6 +45,7 @@ pub mod json_format;
 pub mod otel;
 pub mod propagation;
 pub mod resource;
+pub mod stderr_capture;
 pub mod with_dispatch;
 
 /// Framework crates whose `info`/`debug` output is wire-level chatter, not

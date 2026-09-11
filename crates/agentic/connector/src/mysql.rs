@@ -333,6 +333,21 @@ impl DatabaseConnector for MysqlConnector {
         SqlDialect::Other("MySQL")
     }
 
+    #[tracing::instrument(
+        target = "agentic_connector::query",
+        name = "db.query",
+        skip_all,
+        err(level = "info", Display),
+        fields(
+            otel.name = %crate::telemetry::span_name(sql, "mysql"),
+            otel.kind = "client",
+            db.system.name = "mysql",
+            db.operation.name = %crate::telemetry::operation_name(sql),
+            db.query.text = %crate::telemetry::query_text(sql),
+            oxy.db.method = "execute_query",
+            oxy.db.sample_limit = sample_limit,
+        )
+    )]
     async fn execute_query(
         &self,
         sql: &str,
@@ -540,6 +555,20 @@ impl DatabaseConnector for MysqlConnector {
         })
     }
 
+    #[tracing::instrument(
+        target = "agentic_connector::query",
+        name = "db.query",
+        skip_all,
+        err(level = "info", Display),
+        fields(
+            otel.name = %crate::telemetry::span_name(sql, "mysql"),
+            otel.kind = "client",
+            db.system.name = "mysql",
+            db.operation.name = %crate::telemetry::operation_name(sql),
+            db.query.text = %crate::telemetry::query_text(sql),
+            oxy.db.method = "execute_query_full",
+        )
+    )]
     async fn execute_query_full(&self, sql: &str) -> Result<TypedRowStream, ConnectorError> {
         let sql = normalize_sql(sql);
         use sqlx::Statement;

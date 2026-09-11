@@ -56,6 +56,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use declared::{AppSecretEntry, StoredSecret};
+use oxy_server_authz::role_guards::WorkspaceAdmin;
 
 /// Whether a submitted value would land as the empty string.
 ///

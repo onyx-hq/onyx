@@ -438,7 +438,7 @@ fn push_reap_counters(body: &mut String) {
 /// seen nothing. Emitting `0` there would make `time() - gauge` read as
 /// ~57 years and page every rollout. Alerting therefore takes THREE
 /// matchers for three disjoint failures, exactly as
-/// `oxy_metrics_scrape_db_ok` below documents for its own:
+/// `oxy_metrics_scrape_db_ok` above documents for its own:
 ///
 /// ```text
 /// (time() - oxy_router_last_probe_received_timestamp_seconds{job="oxy-worker"}) > 300
@@ -491,7 +491,7 @@ fn push_router_probe(body: &mut String, probes_received: u64, last_probe_millis:
     // comment. A zero timestamp is 1970 and would page on every deploy.
     if last_probe_millis > 0 {
         body.push_str(
-            "# HELP oxy_router_last_probe_received_timestamp_seconds UNIX time of the most recent LISTEN/NOTIFY health probe seen by this process. Alert on staleness — (time() - this) > 300 is three missed 60s probes — plus a scoped absent() for a pipeline that never delivered at all. ABSENT until the first probe, which is one full interval after start by design.\n",
+            "# HELP oxy_router_last_probe_received_timestamp_seconds UNIX time of the most recent LISTEN/NOTIFY health probe seen by this process. ABSENT until the first probe, which is one full interval after start by design — never 0, since time() - 0 is ~57 years. Alerting needs three scoped matchers, not one: (time() - this) > 300 with a for: 5m for delivery that has STOPPED (three missed 60s probes, per-target, the primary matcher); oxy_router_probes_received_total{job=...} == 0 for a replica that has never received one, which this gauge cannot express because it emits no series there and a job-scoped absent() is masked by healthy peers; and absent(oxy_router_probes_received_total{job=...}) for total loss, which neither of the others can see.\n",
         );
         body.push_str("# TYPE oxy_router_last_probe_received_timestamp_seconds gauge\n");
         body.push_str(&format!(

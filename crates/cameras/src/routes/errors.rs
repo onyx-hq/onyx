@@ -39,9 +39,18 @@ pub fn map(err: ServiceError) -> Response {
         ServiceError::NotImplemented(_) => (StatusCode::NOT_IMPLEMENTED, "not_implemented"),
         ServiceError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
     };
-    let body = ApiErrorBody {
-        code,
-        message: err.to_string(),
-    };
+    let message = err.to_string();
+    // The one place every cameras route error becomes a response, so the one
+    // place its cause can be logged. Without this the request span's
+    // `request failed` line carried a status and nothing else: 55 bare `502`s
+    // an hour on `POST /api/control/compliance-reports` in prod on 2026-09-10,
+    // with the upstream's actual complaint only in a body nobody logs. Emitted
+    // inside the request span, so it carries the route and the trace id.
+    if status.is_server_error() {
+        tracing::error!(status = status.as_u16(), code, error = %message, "cameras request failed");
+    } else {
+        tracing::debug!(status = status.as_u16(), code, error = %message, "cameras request rejected");
+    }
+    let body = ApiErrorBody { code, message };
     (status, Json(body)).into_response()
 }

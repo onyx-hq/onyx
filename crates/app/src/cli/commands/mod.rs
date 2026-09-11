@@ -588,6 +588,102 @@ pub fn config_schemas() -> Vec<(&'static str, String)> {
     ]
 }
 
+/// The process's panic hook. It **replaces** whatever is installed — Sentry's
+/// panic integration, `human_panic`, and the hook `oxy_telemetry::stderr_capture`
+/// sets at boot — rather than chaining: chaining would run Sentry's integration
+/// beside the `capture_message` below and report every panic twice.
+///
+/// Because it replaces, it must write the panic itself. When the stderr capture
+/// owns fd 2 (server commands in the JSON log format) that is one structured
+/// `target: "panic"` line via `report_panic`; a multi-line `eprintln!` there would
+/// arrive as one `ERROR` line plus one unstructured `INFO` line per backtrace
+/// frame. Everywhere else — a terminal, a one-shot command — the plain print.
+pub(crate) fn install_panic_hook() {
+    std::panic::set_hook(Box::new(move |panic_info| {
+        // Use eprintln! here — tracing macros must not be called inside a panic
+        // hook because the current span's data may already be unwinding, causing
+        // a second panic in tracing_subscriber's lookup_current.
+        if !oxy_telemetry::stderr_capture::report_panic(panic_info) {
+            let trace = backtrace::Backtrace::force_capture();
+            eprintln!("panic occurred: {panic_info}\n{trace}");
+        }
+
+        // Capture panic in Sentry
+        sentry::capture_message(
+            &format!("Panic occurred: {}", panic_info),
+            sentry::Level::Fatal,
+        );
+    }));
+}
+
+#[cfg(all(test, unix))]
+mod panic_hook_tests {
+    /// Child half of `the_shipped_hook_writes_one_structured_panic_line`: the
+    /// boot order of a server process — stderr capture first, then the hook
+    /// `cli()` installs — then a panic.
+    #[test]
+    fn panic_hook_child_body() {
+        if std::env::var("OXY_PANIC_HOOK_CHILD").is_err() {
+            return;
+        }
+        oxy_telemetry::stderr_capture::install(Some("oxy-test".into())).expect("installed");
+        super::install_panic_hook();
+        let _ = std::thread::spawn(|| panic!("boom after cli() replaced the hook")).join();
+        oxy_telemetry::stderr_capture::finish(std::time::Duration::from_secs(5));
+    }
+
+    /// `cli()` replaces the panic hook after `logging::init` installed the
+    /// capture's. The capture's own test calls `install` alone and so could not
+    /// see that the shipped hook threw its structured line away; this one runs
+    /// the real order in a child process and reads the child's stderr.
+    #[test]
+    fn the_shipped_hook_writes_one_structured_panic_line() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "cli::commands::panic_hook_tests::panic_hook_child_body",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("OXY_PANIC_HOOK_CHILD", "1")
+            .output()
+            .expect("child ran");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let lines: Vec<serde_json::Value> = stderr
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                serde_json::from_str(l)
+                    .unwrap_or_else(|e| panic!("non-JSON line on stderr ({e}): {l:?}\n{stderr}"))
+            })
+            .collect();
+        let panics: Vec<_> = lines.iter().filter(|v| v["target"] == "panic").collect();
+        assert_eq!(
+            panics.len(),
+            1,
+            "exactly one structured panic line: {stderr}"
+        );
+        assert_eq!(
+            panics[0]["panic.message"],
+            "boom after cli() replaced the hook"
+        );
+        assert!(
+            panics[0]["panic.backtrace"]
+                .as_str()
+                .is_some_and(|b| !b.is_empty())
+        );
+        assert!(
+            !stderr.contains("panic occurred"),
+            "the plain multi-line print must not also reach the capture: {stderr}"
+        );
+        assert_eq!(
+            lines.len(),
+            1,
+            "no backtrace frame arrives as its own line: {stderr}"
+        );
+    }
+}
+
 pub async fn cli(
     // Surface API routes composed by the top `oxy-server` crate and forwarded to
     // `serve` (the only subcommand that mounts them). Empty for every other command.
@@ -602,21 +698,7 @@ pub async fn cli(
     extra_workspace_decls: Vec<oxy_shared::fleet_role::RouteRoleDecl>,
 ) -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
-    use std::panic;
-
-    panic::set_hook(Box::new(move |panic_info| {
-        // Use eprintln! here — tracing macros must not be called inside a panic
-        // hook because the current span's data may already be unwinding, causing
-        // a second panic in tracing_subscriber's lookup_current.
-        let trace = backtrace::Backtrace::force_capture();
-        eprintln!("panic occurred: {panic_info}\n{trace}");
-
-        // Capture panic in Sentry
-        sentry::capture_message(
-            &format!("Panic occurred: {}", panic_info),
-            sentry::Level::Fatal,
-        );
-    }));
+    install_panic_hook();
 
     // Add breadcrumb for CLI command
     if let Some(ref command) = args.command {

@@ -247,6 +247,22 @@ pub fn start_with_options(
     cancel
 }
 
+/// One reaper pass, as its own root span.
+///
+/// The span is the point: this loop runs on `oxy-worker`, which had **zero**
+/// trace-correlated log lines (`internal-docs/2026-09-09-hyperdx-observability-findings.md`
+/// §3) because every line it emits comes from a background loop that is
+/// outside any span. A `warn!` with no trace id is a line you can only grep;
+/// inside a span it is a trace you can open, with the cycle's duration and
+/// outcome already on it. The outcome fields are recorded even on the quiet
+/// path — the log stays gated on `total() > 0`, but "the reaper ran and found
+/// nothing" is exactly the fact you want when asking why a task sat unclaimed.
+#[tracing::instrument(
+    target = "background",
+    name = "reaper_cycle",
+    skip_all,
+    fields(requeued = tracing::field::Empty, dead_lettered = tracing::field::Empty)
+)]
 async fn run_reaper_cycle(db: &DatabaseConnection) {
     match crud::reap_stale_tasks(db).await {
         Ok(outcome) => {
@@ -255,6 +271,9 @@ async fn run_reaper_cycle(db: &DatabaseConnection) {
             // here — this is only one of four call sites that reach it.
             // Logging stays gated on `total() > 0` so the 30s loop doesn't
             // flood with "reaper cycle: 0 0" on the happy path.
+            let span = tracing::Span::current();
+            span.record("requeued", outcome.requeued);
+            span.record("dead_lettered", outcome.dead_lettered);
             if outcome.total() > 0 {
                 tracing::info!(
                     target: "background",
@@ -274,12 +293,23 @@ async fn run_reaper_cycle(db: &DatabaseConnection) {
     }
 }
 
+/// One retention pass, as its own root span. Same reasoning as
+/// [`run_reaper_cycle`]: an hourly prune that fails silently is invisible
+/// without a span to hang the failure on.
+#[tracing::instrument(
+    target = "background",
+    name = "retention_cycle",
+    skip_all,
+    fields(pruned = tracing::field::Empty)
+)]
 async fn run_retention_cycle(db: &DatabaseConnection, cfg: &RetentionConfig) {
     match crud::purge_old_terminal_tasks(db, cfg.completed_ttl, cfg.dead_ttl).await {
         Ok(0) => {
             // Quiet on the happy path.
+            tracing::Span::current().record("pruned", 0u64);
         }
         Ok(n) => {
+            tracing::Span::current().record("pruned", n);
             tracing::info!(
                 target: "background",
                 count = n,

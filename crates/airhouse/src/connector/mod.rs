@@ -203,6 +203,21 @@ impl DatabaseConnector for AirhouseConnector {
         SqlDialect::DuckDb
     }
 
+    #[tracing::instrument(
+        target = "agentic_connector::query",
+        name = "db.query",
+        skip_all,
+        err(level = "info", Display),
+        fields(
+            otel.name = %agentic_connector::telemetry::span_name(sql, "airhouse"),
+            otel.kind = "client",
+            db.system.name = "airhouse",
+            db.operation.name = %agentic_connector::telemetry::operation_name(sql),
+            db.query.text = %agentic_connector::telemetry::query_text(sql),
+            oxy.db.method = "execute_query",
+            oxy.db.sample_limit = sample_limit,
+        )
+    )]
     async fn execute_query(
         &self,
         sql: &str,
@@ -418,6 +433,20 @@ impl DatabaseConnector for AirhouseConnector {
         })
     }
 
+    #[tracing::instrument(
+        target = "agentic_connector::query",
+        name = "db.query",
+        skip_all,
+        err(level = "info", Display),
+        fields(
+            otel.name = %agentic_connector::telemetry::span_name(sql, "airhouse"),
+            otel.kind = "client",
+            db.system.name = "airhouse",
+            db.operation.name = %agentic_connector::telemetry::operation_name(sql),
+            db.query.text = %agentic_connector::telemetry::query_text(sql),
+            oxy.db.method = "execute_query_full",
+        )
+    )]
     async fn execute_query_full(&self, sql: &str) -> Result<TypedRowStream, ConnectorError> {
         let sql = normalize_sql(sql);
 
@@ -546,6 +575,20 @@ impl DatabaseConnector for AirhouseConnector {
         })
     }
 
+    #[tracing::instrument(
+        target = "agentic_connector::query",
+        name = "db.query",
+        skip_all,
+        err(level = "info", Display),
+        fields(
+            otel.name = %agentic_connector::telemetry::span_name(sql, "airhouse"),
+            otel.kind = "client",
+            db.system.name = "airhouse",
+            db.operation.name = %agentic_connector::telemetry::operation_name(sql),
+            db.query.text = %agentic_connector::telemetry::query_text(sql),
+            oxy.db.method = "execute_query_full_untyped",
+        )
+    )]
     async fn execute_query_full_untyped(
         &self,
         sql: &str,

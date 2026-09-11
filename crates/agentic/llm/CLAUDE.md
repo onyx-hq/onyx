@@ -64,11 +64,12 @@ the OpenTelemetry GenAI conventions (`otel.name = "chat <model>"`,
 upstream rename is a deliberate edit here.
 
 - Prompt/completion content (`gen_ai.input.messages`, `gen_ai.system_instructions`,
-  `gen_ai.output.messages`) is **Opt-In**: only with `OXY_GENAI_CAPTURE_CONTENT=true`,
-  capped at 64 KB per attribute; tool-call arguments and tool results are
-  stripped from both the input history and the output, names stay. Default
-  off — the span also lands in the tenant-visible product store, which no
-  collector sits in front of.
+  `gen_ai.output.messages`) is **always** recorded, tool-call arguments and tool
+  results included, capped at 64 KB per attribute. The true output size and any
+  tool calls past the budget are separate fields (`oxy.gen_ai.output.bytes`,
+  `oxy.gen_ai.output.tool_calls_dropped`) — never a marker inside the capped
+  attribute, which the cap would cut away. A failed call also records the
+  provider's message on `oxy.error.message`.
 - Tenant / conversation / agent come from `LlmClient::with_genai_context`;
   the analytics `BuildContext.genai` and the builder client builder set what
   they know. Absent fields are not recorded.

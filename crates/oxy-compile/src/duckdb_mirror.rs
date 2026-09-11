@@ -97,6 +97,13 @@ async fn mirror_local_dir(
     let dir = workspace_path.join(dataset);
     let read_dir = match std::fs::read_dir(&dir) {
         Ok(rd) => rd,
+        // A workspace with no local DuckDB dataset simply has no directory, and
+        // that was a `WARN` on every compile of every such workspace. Only a
+        // directory that exists and still cannot be read is worth a warning.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(dir = %dir.display(), "duckdb mirror: no dataset dir; skipping");
+            return None;
+        }
         Err(e) => {
             tracing::warn!(?e, dir = %dir.display(), "duckdb mirror: cannot read dataset dir; skipping");
             return None;

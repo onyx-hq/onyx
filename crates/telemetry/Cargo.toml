@@ -11,6 +11,7 @@ oxy-shared = { workspace = true }
 axum = { workspace = true }
 chrono = { workspace = true }
 http = { workspace = true }
+libc = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry-appender-tracing = { workspace = true }
 opentelemetry-http = { workspace = true }
@@ -23,6 +24,9 @@ tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json", "registry"] }
 
 [dev-dependencies]
+# `compression-br` for the test pinning where `record_error_body` must sit
+# relative to a `CompressionLayer`.
+tower-http = { workspace = true, features = ["trace", "compression-br"] }
 # `testing` turns on the in-memory span exporter the http_trace tests assert
 # against — a real OTLP round-trip would need a collector on the test host.
 opentelemetry_sdk = { workspace = true, features = ["testing"] }

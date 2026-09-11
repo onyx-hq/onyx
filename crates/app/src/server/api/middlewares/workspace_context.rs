@@ -1064,6 +1064,32 @@ pub(crate) async fn resolve_effective_role(
 /// "Run compile now". A const, not an env flag — keep the surface small.
 const LAZY_COMPILE_BACKOFF_SECS: i64 = 300;
 
+/// Ceiling for the self-heal backoff, however many compiles in a row failed.
+const LAZY_COMPILE_BACKOFF_MAX_SECS: i64 = 6 * 60 * 60;
+
+/// How many recent `main` revisions are read to count consecutive failures.
+/// Enough to reach the ceiling: 300s doubled 7 times passes 6h.
+const LAZY_COMPILE_FAILURE_LOOKBACK: u64 = 8;
+
+/// Backoff after `consecutive_failures` failed compiles in a row.
+///
+/// Self-heal (`content_change == false`) doubles per failure: a workspace whose
+/// `config.yml` deterministically fails was otherwise recompiled every 5
+/// minutes forever — measured on prod 2026-09-10 as 3 workspaces producing 37
+/// of the fleet's 93 `ERROR` lines an hour, each retry identical to the last.
+/// A content change (a pull brought new commits) keeps the flat window: new
+/// source is exactly what might fix it, and the fix must not wait hours.
+fn lazy_compile_backoff_secs(consecutive_failures: u32, content_change: bool) -> i64 {
+    if consecutive_failures == 0 {
+        return 0;
+    }
+    if content_change {
+        return LAZY_COMPILE_BACKOFF_SECS;
+    }
+    let doublings = (consecutive_failures - 1).min(16);
+    (LAZY_COMPILE_BACKOFF_SECS << doublings).min(LAZY_COMPILE_BACKOFF_MAX_SECS)
+}
+
 pub async fn enqueue_lazy_compile(db: &sea_orm::DatabaseConnection, workspace_id: Uuid) {
     enqueue_compile_deduped(db, workspace_id, None, None, "lazy self-heal").await
 }
@@ -1089,7 +1115,8 @@ pub(crate) async fn enqueue_compile_deduped(
     reason: &str,
 ) {
     use sea_orm::{
-        ColumnTrait, ConnectionTrait, DatabaseBackend, QueryFilter, Statement, TransactionTrait,
+        ColumnTrait, ConnectionTrait, DatabaseBackend, QueryFilter, QueryOrder, QuerySelect,
+        Statement, TransactionTrait,
     };
 
     // Serialise concurrent self-heal enqueues for the SAME workspace across
@@ -1144,19 +1171,45 @@ pub(crate) async fn enqueue_compile_deduped(
     // recompile storm (each failed compile clears the in-flight dedup below, so
     // the next request re-enqueues). Wait out the window. Checked INSIDE the lock
     // alongside the in-flight dedup so concurrent first-hits agree.
-    let backoff_cutoff =
-        (Utc::now() - chrono::Duration::seconds(LAZY_COMPILE_BACKOFF_SECS)).fixed_offset();
-    let recently_failed = entity::revisions::Entity::find()
-        .filter(entity::revisions::Column::WorkspaceId.eq(workspace_id))
-        .filter(entity::revisions::Column::Kind.eq("main"))
-        .filter(entity::revisions::Column::Status.eq("failed"))
-        .filter(entity::revisions::Column::FinishedAt.gte(backoff_cutoff))
-        .one(&txn)
-        .await;
-    if matches!(recently_failed, Ok(Some(_))) {
+    // Two columns, not whole rows: a failed revision carries `error_summary`,
+    // the per-file failure report, and failing workspaces are exactly the ones
+    // this reads. `started_at` is NOT NULL, so the ordering has no NULL trap.
+    let recent: Vec<(String, Option<sea_orm::prelude::DateTimeWithTimeZone>)> =
+        match entity::revisions::Entity::find()
+            .select_only()
+            .column(entity::revisions::Column::Status)
+            .column(entity::revisions::Column::FinishedAt)
+            .filter(entity::revisions::Column::WorkspaceId.eq(workspace_id))
+            .filter(entity::revisions::Column::Kind.eq("main"))
+            .order_by_desc(entity::revisions::Column::StartedAt)
+            .limit(LAZY_COMPILE_FAILURE_LOOKBACK)
+            .into_tuple()
+            .all(&txn)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                // Same outcome as before this backoff read existed: no known
+                // failures, so the enqueue proceeds. Said out loud, not silent.
+                tracing::warn!(?e, %workspace_id, "lazy compile: reading recent revisions failed");
+                Vec::new()
+            }
+        };
+    let consecutive_failures = recent
+        .iter()
+        .take_while(|(status, _)| status == "failed")
+        .count() as u32;
+    let backoff_secs = lazy_compile_backoff_secs(consecutive_failures, git_sha.is_some());
+    let last_failed_at = recent.first().and_then(|(_, finished_at)| *finished_at);
+    if let Some(finished_at) = last_failed_at
+        && backoff_secs > 0
+        && Utc::now().fixed_offset() - finished_at < chrono::Duration::seconds(backoff_secs)
+    {
         tracing::debug!(
             %workspace_id,
-            "lazy compile: backing off (a compile failed within the backoff window)"
+            consecutive_failures,
+            backoff_secs,
+            "lazy compile: backing off (recent compiles failed)"
         );
         let _ = txn.rollback().await;
         return;
@@ -1516,6 +1569,33 @@ async fn try_attach_workspace_manager(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn self_heal_backoff_doubles_per_consecutive_failure_up_to_six_hours() {
+        use super::lazy_compile_backoff_secs as b;
+        assert_eq!(b(0, false), 0, "nothing failed, nothing to wait for");
+        assert_eq!(b(1, false), 300);
+        assert_eq!(b(2, false), 600);
+        assert_eq!(b(4, false), 2400);
+        assert_eq!(b(8, false), 6 * 60 * 60);
+        assert_eq!(
+            b(u32::MAX, false),
+            6 * 60 * 60,
+            "no overflow at the extreme"
+        );
+    }
+
+    #[test]
+    fn a_content_change_never_waits_longer_than_the_flat_window() {
+        use super::lazy_compile_backoff_secs as b;
+        assert_eq!(b(0, true), 0);
+        assert_eq!(b(1, true), 300);
+        assert_eq!(
+            b(8, true),
+            300,
+            "a pushed fix must not wait hours behind the failures"
+        );
+    }
+
     use super::*;
     use axum::http::StatusCode;
     use axum::response::IntoResponse;

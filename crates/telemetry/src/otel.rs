@@ -369,4 +369,45 @@ mod tests {
     fn shutdown_without_providers_is_a_no_op() {
         assert!(shutdown().is_empty());
     }
+
+    /// Agent runs are created with `parent: None` (the product console lists
+    /// runs as root spans) and then `follows_from` whatever started them. That
+    /// only makes the run navigable in HyperDX if the OTel layer turns the
+    /// relation into a span **link** — this pins that it does.
+    #[test]
+    fn follows_from_becomes_a_span_link_on_a_detached_root() {
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::InMemorySpanExporter;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test")));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        {
+            let task = tracing::info_span!("agentic_task");
+            let _entered = task.enter();
+            let run = tracing::info_span!(parent: None, "analytics.run");
+            run.follows_from(tracing::Span::current());
+            drop(run);
+        }
+        provider.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        let task = spans.iter().find(|s| s.name == "agentic_task").unwrap();
+        let run = spans.iter().find(|s| s.name == "analytics.run").unwrap();
+        assert_ne!(
+            run.span_context.trace_id(),
+            task.span_context.trace_id(),
+            "still its own root trace"
+        );
+        assert_eq!(run.links.links.len(), 1, "{:?}", run.links);
+        assert_eq!(
+            run.links.links[0].span_context.span_id(),
+            task.span_context.span_id()
+        );
+    }
 }

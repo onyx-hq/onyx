@@ -351,6 +351,21 @@ impl DatabaseConnector for DuckDbConnector {
         Some(self)
     }
 
+    #[tracing::instrument(
+        target = "agentic_connector::query",
+        name = "db.query",
+        skip_all,
+        err(level = "info", Display),
+        fields(
+            otel.name = %crate::telemetry::span_name(sql, "duckdb"),
+            otel.kind = "client",
+            db.system.name = "duckdb",
+            db.operation.name = %crate::telemetry::operation_name(sql),
+            db.query.text = %crate::telemetry::query_text(sql),
+            oxy.db.method = "execute_query",
+            oxy.db.sample_limit = sample_limit,
+        )
+    )]
     async fn execute_query(
         &self,
         sql: &str,
@@ -547,6 +562,20 @@ impl DatabaseConnector for DuckDbConnector {
         .map_err(|e| ConnectorError::ConnectionError(format!("blocking task panicked: {e}")))?
     }
 
+    #[tracing::instrument(
+        target = "agentic_connector::query",
+        name = "db.query",
+        skip_all,
+        err(level = "info", Display),
+        fields(
+            otel.name = %crate::telemetry::span_name(sql, "duckdb"),
+            otel.kind = "client",
+            db.system.name = "duckdb",
+            db.operation.name = %crate::telemetry::operation_name(sql),
+            db.query.text = %crate::telemetry::query_text(sql),
+            oxy.db.method = "execute_query_full",
+        )
+    )]
     async fn execute_query_full(&self, sql: &str) -> Result<TypedRowStream, ConnectorError> {
         let sql = normalize_sql(sql);
         let conn = self.conn.clone();
@@ -767,6 +796,97 @@ impl crate::connector::AsArrowConnector for DuckDbConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod span_capture {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        use tracing::field::{Field, Visit};
+        use tracing::span::{Attributes, Id};
+        use tracing::{Event, Subscriber};
+        use tracing_subscriber::Layer;
+        use tracing_subscriber::layer::Context;
+        use tracing_subscriber::registry::LookupSpan;
+
+        pub type Fields = HashMap<String, String>;
+
+        #[derive(Default, Clone)]
+        pub struct Seen {
+            pub spans: Arc<Mutex<Vec<(String, Fields)>>>,
+            /// `(level, span it was inside, fields)`
+            pub events: Arc<Mutex<Vec<(tracing::Level, String, Fields)>>>,
+        }
+
+        struct V(Fields);
+        impl Visit for V {
+            fn record_debug(&mut self, f: &Field, v: &dyn std::fmt::Debug) {
+                self.0.insert(f.name().into(), format!("{v:?}"));
+            }
+            fn record_str(&mut self, f: &Field, v: &str) {
+                self.0.insert(f.name().into(), v.into());
+            }
+        }
+
+        impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Seen {
+            fn on_new_span(&self, attrs: &Attributes<'_>, _id: &Id, _ctx: Context<'_, S>) {
+                let mut v = V(Fields::new());
+                attrs.record(&mut v);
+                self.spans
+                    .lock()
+                    .unwrap()
+                    .push((attrs.metadata().name().to_string(), v.0));
+            }
+            fn on_event(&self, e: &Event<'_>, ctx: Context<'_, S>) {
+                let mut v = V(Fields::new());
+                e.record(&mut v);
+                let span = ctx
+                    .event_span(e)
+                    .map(|s| s.name().to_string())
+                    .unwrap_or_default();
+                self.events
+                    .lock()
+                    .unwrap()
+                    .push((*e.metadata().level(), span, v.0));
+            }
+        }
+    }
+
+    /// Every statement is a `db.query` client span carrying the semconv
+    /// attributes; a statement the warehouse rejects records its error inside
+    /// that span at `info` (never `warn`+, which would also reach Sentry).
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_query_is_a_db_span_and_a_rejected_one_records_its_error_at_info() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let seen = span_capture::Seen::default();
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(seen.clone()));
+
+        let conn = DuckDbConnector::new(Connection::open_in_memory().unwrap());
+        conn.execute_query("-- revenue\nselect 42 as answer", 10)
+            .await
+            .unwrap();
+        let _ = conn.execute_query("select * from no_such_table", 10).await;
+
+        let spans = seen.spans.lock().unwrap().clone();
+        let queries: Vec<_> = spans.iter().filter(|(n, _)| n == "db.query").collect();
+        assert_eq!(queries.len(), 2, "{spans:?}");
+        let f = &queries[0].1;
+        assert_eq!(f["otel.name"], "SELECT duckdb");
+        assert_eq!(f["otel.kind"], "client");
+        assert_eq!(f["db.system.name"], "duckdb");
+        assert_eq!(f["db.operation.name"], "SELECT");
+        assert_eq!(f["db.query.text"], "-- revenue\nselect 42 as answer");
+        assert_eq!(f["oxy.db.method"], "execute_query");
+        assert_eq!(f["oxy.db.sample_limit"], "10");
+
+        let events = seen.events.lock().unwrap().clone();
+        let failure = events
+            .iter()
+            .find(|(_, span, fields)| span == "db.query" && fields.contains_key("error"))
+            .unwrap_or_else(|| panic!("the rejected statement's error is on its span: {events:?}"));
+        assert_eq!(failure.0, tracing::Level::INFO);
+        assert!(failure.2["error"].contains("no_such_table"), "{failure:?}");
+    }
 
     #[test]
     fn normalize_collapses_spaces_to_underscores() {

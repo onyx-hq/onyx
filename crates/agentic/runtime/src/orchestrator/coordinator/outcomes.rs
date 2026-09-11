@@ -249,7 +249,30 @@ impl Coordinator {
     }
 
     async fn handle_failed(&mut self, task_id: &str, msg: String) {
-        tracing::error!(target: "coordinator", task_id, error = %msg, "handle_failed");
+        // Named for what happened, not for the function: "handle_failed" was
+        // the single most frequent ERROR message in prod and said nothing a
+        // reader scanning the error view could act on. The run id and the
+        // kind of task are what tell a compile failure from an agent crash.
+        let (run_id, task_kind, parent_task_id) = match self.tasks.get(task_id) {
+            Some(node) => (
+                node.run_id.as_str(),
+                node.original_spec
+                    .as_ref()
+                    .map(super::source_type_for_spec)
+                    .unwrap_or_default(),
+                node.parent_task_id.as_deref().unwrap_or(""),
+            ),
+            None => ("", String::new(), ""),
+        };
+        tracing::error!(
+            target: "coordinator",
+            task_id,
+            run_id,
+            task_kind = %task_kind,
+            parent_task_id,
+            error = %msg,
+            "agentic task failed"
+        );
 
         // Surface the raw worker failure on the parent's event stream
         // *before* we decide retry/fallback — admins should see every

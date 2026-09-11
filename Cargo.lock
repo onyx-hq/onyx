@@ -351,6 +351,7 @@ dependencies = [
  "tokio-postgres",
  "tokio-postgres-rustls",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "webpki-roots 1.0.7",
  "wiremock",
@@ -477,6 +478,7 @@ dependencies = [
  "tokio-postgres-rustls",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "webpki-roots 1.0.7",
 ]
@@ -9981,6 +9983,7 @@ dependencies = [
  "axum",
  "chrono",
  "http 1.5.0",
+ "libc",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry-http",
