@@ -11,7 +11,7 @@ httpx==0.28.1
 # aiohttp powers the worker's tiny preview HTTP server (JPEG snapshots
 # of the latest decoded frame, consumed by the Oxy UI's per-camera
 # thumbnail via a proxy in oxy-cameras).
-aiohttp==3.11.10
+aiohttp==3.14.0
 pydantic==2.10.3
 psutil==6.1.0
 
@@ -44,4 +44,4 @@ faster-whisper==1.2.1
 # typo'd variable references rather than silently producing empty
 # output. Built-in fallback (see prompts.py) is used when the
 # backend ships an old config that doesn't include domain_pack.
-Jinja2==3.1.4
+Jinja2==3.1.6
