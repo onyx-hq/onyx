@@ -749,7 +749,9 @@ pub async fn handle_publish_command(args: PublishArgs) -> Result<(), OxyError> {
 
     let cwd = std::env::current_dir()
         .map_err(|e| OxyError::RuntimeError(format!("cannot read cwd: {e}")))?;
-    let manifest = OxyAppManifest::load_from_dir(&cwd);
+    // A broken oxy-app.json stops the publish. Treating it as absent used to
+    // ship the bundle with no functions and an identity from flags or the cwd.
+    let manifest = OxyAppManifest::load_from_dir(&cwd)?;
     let inferred = infer_org_app_from_cwd();
 
     // Identity: flag → env → manifest → cwd path.

@@ -26,7 +26,7 @@ use oxy_shared::errors::OxyError;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::app_manifest::{OxyAppManifest, ResolvedEnv, resolve_env};
+use super::app_manifest::{ResolvedEnv, load_for_target_resolution, resolve_env};
 use super::assume_org::{get_rows, resolve_org};
 use super::http;
 
@@ -114,7 +114,7 @@ pub(super) struct Connection {
 
 fn connect(session: &SessionArgs) -> Result<Connection, OxyError> {
     let cwd = std::env::current_dir().unwrap_or_default();
-    let manifest = OxyAppManifest::load_from_dir(&cwd);
+    let manifest = load_for_target_resolution(&cwd, session.target.as_deref())?;
     let ResolvedEnv { target, org_slug } =
         resolve_env(manifest.as_ref(), Some(&session.env), session.target.as_deref()).ok_or_else(
             || {

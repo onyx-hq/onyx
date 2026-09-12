@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
-use super::app_manifest::{OxyAppManifest, ResolvedEnv, resolve_env, resolve_target};
+use super::app_manifest::{ResolvedEnv, load_for_target_resolution, resolve_env, resolve_target};
 
 #[derive(Parser, Debug)]
 pub struct LoginArgs {
@@ -155,7 +155,12 @@ pub fn load_token(target: &str) -> Option<String> {
 // ── login flow ─────────────────────────────────────────────────────────────
 
 pub async fn handle_login_command(args: LoginArgs) -> Result<(), OxyError> {
-    let manifest = OxyAppManifest::load_from_dir(&std::env::current_dir().unwrap_or_default());
+    // Strict unless `--target` was passed: the manifest's `environments` pick
+    // the target, so a broken file would log you in somewhere else.
+    let manifest = load_for_target_resolution(
+        &std::env::current_dir().unwrap_or_default(),
+        args.target.as_deref(),
+    )?;
     let envs = envs_with_default(&args.env);
 
     // `--target` only makes sense with a single env. With several envs
@@ -315,7 +320,10 @@ async fn login_one(target: &str) -> Result<String, OxyError> {
 }
 
 pub async fn handle_logout_command(args: LogoutArgs) -> Result<(), OxyError> {
-    let manifest = OxyAppManifest::load_from_dir(&std::env::current_dir().unwrap_or_default());
+    let manifest = load_for_target_resolution(
+        &std::env::current_dir().unwrap_or_default(),
+        args.target.as_deref(),
+    )?;
     let envs = envs_with_default(&args.env);
 
     if envs.len() > 1 && args.target.is_some() {

@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use oxy_shared::errors::OxyError;
 use serde::Deserialize;
 
 use super::env_url;
@@ -69,17 +70,43 @@ pub struct BuildSpec {
     pub out_dir: Option<String>,
 }
 
+/// One `environments.<name>` entry.
+///
+/// `target` is optional: an entry without it (or with a blank one) resolves as
+/// if the entry were absent. It used to be required, and because a parse
+/// failure made the whole manifest read as missing, an entry carrying only
+/// other keys made `oxy publish` bundle no functions and fall back to flag/cwd
+/// identity — silently.
 #[derive(Debug, Deserialize)]
 pub struct EnvSpec {
-    pub target: String,
+    pub target: Option<String>,
 }
 
 impl OxyAppManifest {
-    /// Load `<dir>/oxy-app.json`, or `None` if absent / unparsable. Callers
-    /// treat absence as "fall back to flags + defaults".
-    pub fn load_from_dir(dir: &Path) -> Option<Self> {
-        let raw = std::fs::read_to_string(dir.join(MANIFEST_FILE)).ok()?;
-        serde_json::from_str(&raw).ok()
+    /// Load `<dir>/oxy-app.json`. `Ok(None)` when there is no such file —
+    /// callers treat absence as "fall back to flags + defaults".
+    ///
+    /// A file that exists but can't be read or parsed is an **error** naming
+    /// the file, never `None`: every caller would otherwise carry on with the
+    /// wrong identity, target and function set.
+    pub fn load_from_dir(dir: &Path) -> Result<Option<Self>, OxyError> {
+        let path = dir.join(MANIFEST_FILE);
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(OxyError::ConfigurationError(format!(
+                    "cannot read {}: {e}",
+                    path.display()
+                )));
+            }
+        };
+        serde_json::from_str(&raw).map(Some).map_err(|e| {
+            OxyError::ConfigurationError(format!(
+                "{} is not a valid oxy-app.json: {e}. Fix the file and re-run.",
+                path.display()
+            ))
+        })
     }
 
     /// Install command, default `pnpm install`.
@@ -162,11 +189,14 @@ pub fn resolve_env(
         return Some(ResolvedEnv::new(t.trim(), org_slug));
     }
     let env = env?;
-    if let Some(spec) = manifest
+    // An entry without a usable `target` falls through, exactly as if absent.
+    if let Some(target) = manifest
         .and_then(|m| m.environments.as_ref())
         .and_then(|envs| envs.get(env))
+        .and_then(|spec| spec.target.as_deref())
+        .filter(|t| !t.trim().is_empty())
     {
-        return Some(ResolvedEnv::new(spec.target.as_str(), None));
+        return Some(ResolvedEnv::new(target, None));
     }
     if let Some(t) = default_target(env) {
         return Some(ResolvedEnv::new(t, None));
@@ -176,6 +206,26 @@ pub fn resolve_env(
     env_url::looks_like_url(env)
         .then(|| env_url::parse_env_url(env))
         .flatten()
+}
+
+/// Load `<dir>/oxy-app.json` for a command that reads it only to resolve the
+/// target (`oxy login`, `logout`, `proxy`, `assume`).
+///
+/// A non-blank `--target` wins outright in [`resolve_env`], so the manifest
+/// cannot change the outcome: this returns `Ok(None)` without reading the file,
+/// and a broken `oxy-app.json` no longer fails a command that was told where to
+/// go. Otherwise it is [`OxyAppManifest::load_from_dir`], strict as ever.
+///
+/// `oxy publish` calls `load_from_dir` directly: it needs the manifest's
+/// identity and functions whatever `--target` says.
+pub fn load_for_target_resolution(
+    dir: &Path,
+    target_flag: Option<&str>,
+) -> Result<Option<OxyAppManifest>, OxyError> {
+    if target_flag.is_some_and(|t| !t.trim().is_empty()) {
+        return Ok(None);
+    }
+    OxyAppManifest::load_from_dir(dir)
 }
 
 #[cfg(test)]
@@ -269,6 +319,96 @@ mod tests {
         let r = resolve_env(None, None, Some("https://poke-house.oxygen-hq.com")).unwrap();
         assert_eq!(r.target, "https://poke-house.oxygen-hq.com");
         assert_eq!(r.org_slug.as_deref(), Some("poke-house"));
+    }
+
+    #[test]
+    fn an_environment_entry_without_target_falls_back_as_if_absent() {
+        // Newer manifests put other per-environment keys under `environments`
+        // (the environments design adds staging/dev slots). An entry with no
+        // `target` must not fail the whole parse: that made the CLI treat the
+        // manifest as missing and publish with no functions bundled.
+        let m: OxyAppManifest = serde_json::from_value(serde_json::json!({
+            "slug": "x",
+            "functions": { "top-stores": {} },
+            "environments": {
+                "dev": {},
+                "staging": { "someFutureKey": true },
+                "production": { "target": "   " },
+                "https://poke-house.oxygen-hq.com": {}
+            }
+        }))
+        .expect("an environments entry without `target` still parses");
+        assert!(
+            m.functions
+                .as_ref()
+                .is_some_and(|f| f.contains_key("top-stores"))
+        );
+        for env in ["dev", "staging", "production"] {
+            assert_eq!(
+                resolve_target(Some(&m), Some(env), None).as_deref(),
+                default_target(env),
+                "{env} falls back to the built-in default"
+            );
+        }
+        // …and a URL-shaped name falls through to URL parsing, exactly as if
+        // the entry were not there.
+        let r = resolve_env(Some(&m), Some("https://poke-house.oxygen-hq.com"), None).unwrap();
+        assert_eq!(r.target, "https://app.oxygen-hq.com");
+        assert_eq!(r.org_slug.as_deref(), Some("poke-house"));
+    }
+
+    #[test]
+    fn a_missing_manifest_is_none_but_an_unparseable_one_is_an_error() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        assert!(
+            OxyAppManifest::load_from_dir(dir.path())
+                .expect("absence is not an error")
+                .is_none()
+        );
+
+        for bad in [r#"{ "slug": "x", "#, r#"{ "slug": 5 }"#] {
+            std::fs::write(dir.path().join(MANIFEST_FILE), bad).unwrap();
+            let err = OxyAppManifest::load_from_dir(dir.path())
+                .expect_err("an unparseable oxy-app.json must be an error, not None")
+                .to_string();
+            assert!(err.contains("oxy-app.json"), "names the file: {err}");
+            assert!(
+                err.contains(&dir.path().display().to_string()),
+                "names the path: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_target_flag_skips_a_broken_manifest_but_a_blank_or_absent_one_does_not() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        std::fs::write(dir.path().join(MANIFEST_FILE), r#"{ "slug": "x", "#).unwrap();
+
+        // `--target` wins in `resolve_env`, so the broken file cannot change
+        // the outcome and must not fail the command.
+        assert!(
+            load_for_target_resolution(dir.path(), Some("https://flag.example.com"))
+                .expect("a target flag does not read the manifest")
+                .is_none()
+        );
+
+        // Without a usable flag the manifest decides the target: still strict.
+        for flag in [None, Some(""), Some("   ")] {
+            let err = load_for_target_resolution(dir.path(), flag)
+                .expect_err("a broken manifest is an error when it picks the target")
+                .to_string();
+            assert!(
+                err.contains("oxy-app.json"),
+                "{flag:?} names the file: {err}"
+            );
+        }
+
+        // And a valid manifest still loads when no flag is passed.
+        std::fs::write(dir.path().join(MANIFEST_FILE), r#"{ "slug": "x" }"#).unwrap();
+        let m = load_for_target_resolution(dir.path(), None)
+            .expect("a valid manifest loads")
+            .expect("and is present");
+        assert_eq!(m.slug.as_deref(), Some("x"));
     }
 
     #[test]

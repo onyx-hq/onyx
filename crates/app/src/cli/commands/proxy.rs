@@ -24,7 +24,7 @@ use axum::response::{IntoResponse, Response};
 use oxy_shared::errors::OxyError;
 use reqwest::Client;
 
-use super::app_manifest::{OxyAppManifest, resolve_target};
+use super::app_manifest::{load_for_target_resolution, resolve_target};
 use super::login;
 
 /// Cap on a buffered request body. Requests through the proxy are small (query /
@@ -355,7 +355,10 @@ async fn forward(State(state): State<Arc<ProxyState>>, req: Request) -> Response
 pub async fn handle_proxy_command(args: ProxyArgs) -> Result<(), OxyError> {
     let cwd =
         std::env::current_dir().map_err(|e| OxyError::RuntimeError(format!("current dir: {e}")))?;
-    let manifest = OxyAppManifest::load_from_dir(&cwd);
+    // Without `--target`, a broken oxy-app.json is an error, not "no manifest":
+    // its `environments` decide the target, and silently dropping them proxies
+    // somewhere else. With `--target` the file is not read.
+    let manifest = load_for_target_resolution(&cwd, args.target.as_deref())?;
     let env = first_env(&args.env);
 
     let target = resolve_target(manifest.as_ref(), Some(&env), args.target.as_deref())
