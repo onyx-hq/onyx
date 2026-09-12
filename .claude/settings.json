@@ -1,51 +1,112 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm:*)",
+      "Bash(git:*)",
+      "Bash(cargo:*)",
       "Bash(pnpm:*)",
       "Bash(node:*)",
-      "Bash(ls:*)",
-      "Bash(cat:*)",
-      "Bash(grep:*)",
+      "Bash(python3:*)",
+      "Bash(ast-grep:*)",
+      "Bash(fd:*)",
       "Bash(find:*)",
-      "Bash(pwd)",
-      "Bash(cargo:*)",
-      "Bash(git:*)",
-      "Bash(curl:*)",
-      "Bash(echo:*)",
-      "Bash(mkdir:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(ls:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(awk:*)",
+      "Bash(jq:*)",
+      "Bash(sed:*)",
+      "Bash(sort:*)",
+      "Bash(tr:*)",
+      "Bash(uniq:*)",
       "Bash(cp:*)",
+      "Bash(mkdir:*)",
       "Bash(mv:*)",
       "Bash(rm:*)",
       "Bash(touch:*)",
-      "Bash(head:*)",
-      "Bash(tail:*)",
-      "Bash(wc:*)",
-      "Bash(sort:*)",
-      "Bash(uniq:*)",
-      "Bash(sed:*)",
-      "Bash(awk:*)",
-      "Bash(tr:*)",
-      "Bash(ast-grep:*)",
-      "Bash(rg:*)",
-      "Bash(fd:*)",
-      "Bash(jq:*)",
-      "Bash(python3:*)",
-      "Bash(which:*)",
+      "Bash(echo:*)",
       "Bash(env:*)",
+      "Bash(pwd)",
+      "Bash(which:*)",
+      "Bash(curl:*)",
       "Bash(kubectl:*)"
     ],
-    "deny": []
+    "ask": [
+      "Bash(git push:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git branch -D:*)",
+      "Bash(pnpm publish:*)",
+      "Bash(kubectl apply:*)",
+      "Bash(kubectl delete:*)",
+      "Bash(kubectl patch:*)",
+      "Bash(kubectl scale:*)",
+      "Bash(kubectl rollout:*)",
+      "Bash(kubectl exec:*)"
+    ],
+    "deny": ["Bash(npm:*)", "Bash(npx:*)", "Bash(yarn:*)", "Bash(cargo test:*)"],
+    "defaultMode": "auto"
+  },
+  "autoMode": {
+    "environment": [
+      "$defaults",
+      "Repo: the Oxy monorepo (brand Oxygen) — a Rust/Cargo workspace plus a pnpm + Vite React frontend in web-app/. `just` is the task runner.",
+      "Local dev Postgres is a disposable Docker container `oxy-postgres` on localhost:15432 (postgres/postgres, db `oxy`), created by `oxy start` / `just up`. Querying, resetting or destroying it loses only local scratch data.",
+      "`just up` is the sanctioned way to start the dev stack and is idempotent — re-running it is safe. Dev sign-in is `/dev-login?as=<persona>` against 127.0.0.1:5173, a local-only shortcut rather than a credential bypass.",
+      "`oxyc` talks to REAL deployments and takes `--env dev|staging|prod`. Reads are safe in any env; a write outside `--env dev` touches real customer data.",
+      "Builds here are link-bound and slow: `cargo check` is cheap, an unscoped `cargo nextest run` across 84 crates is not. Tests are always scoped (`just unit <crate>`, `just test-crate <crate>`).",
+      "`rm` is aliased to `trash` on this machine, so a stray `rm` is recoverable from the macOS Trash."
+    ],
+    "allow": [
+      "$defaults",
+      "Read-only `oxyc` in any env: `oxyc routes`, `oxyc schema`, `oxyc whoami`, `oxyc exit-codes`, and `oxyc api` on a GET endpoint with no -f/-F/--input.",
+      "Local dev stack operations: `just up`, `just install`, `just seed`, and any `just` recipe that only builds, tests, or starts services on localhost.",
+      "Scoped Rust work: `cargo check`, `cargo clippy`, `cargo fmt`, `cargo clean`, and `cargo nextest run` carrying a -p / --test / -E filter.",
+      "Any SQL against localhost:15432 or localhost:15433 — including DDL, DROP and TRUNCATE. Those are throwaway local containers.",
+      "Read-only GitHub CLI: `gh pr view|list|diff|checks`, `gh run view|list`, `gh issue view|list`, and `gh api` with no -X or -f.",
+      "Playwright MCP navigation, clicks and screenshots against 127.0.0.1 / localhost origins."
+    ],
+    "soft_deny": [
+      "$defaults",
+      "Any `oxyc` write against `--env staging` or `--env prod`: a non-GET method, -f/-F/--input, `oxyc publish`, or `oxyc assume` into a tenant workspace.",
+      "Publishing or releasing: `pnpm publish`, `gh release create`, or `gh workflow run` on a publish/release workflow.",
+      "History rewrites and remote mutations: `git push --force`, `git reset --hard`, `git branch -D`, rebasing a pushed branch, `gh pr merge`.",
+      "`kubectl` mutations — apply, delete, scale, rollout, patch, exec, cordon — against any cluster. Read-only kubectl (get, describe, logs, top) is fine.",
+      "Deprovisioning a tenant resource: deleting a custom app, an org, an OLTP writer or its schema, or an S3 bucket/prefix.",
+      "Rotating a QuickBooks refresh token or any shared OAuth credential — Intuit voids the old token on issue, so a second rotator deadlocks the integration into invalid_grant until a manual re-auth."
+    ],
+    "hard_deny": [
+      "$defaults",
+      "Printing, copying or transmitting secret material: any `.env*` file other than `.env.example`, `~/.aws/credentials`, the shared `oxy`/`oxyc` credential file, `OXY_TOKEN`, Stripe live keys, or SES credentials.",
+      "Committing or staging any `.env*` file other than `.env.example` — it is the only one that may be committed.",
+      "Widening this agent's own authority: editing `.claude/settings.json` permissions or hooks to drop a deny, passing --dangerously-skip-permissions, or disabling the sandbox.",
+      "Sending repo source, customer data, or query results to an external service that is not already part of the task."
+    ]
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/guard-bash.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
         "hooks": [
           {
             "type": "command",
-            "command": "cat >/dev/null || true; command -v code-review-graph >/dev/null 2>&1 || exit 0; git rev-parse --git-dir >/dev/null 2>&1 && code-review-graph update --skip-flows --repo \"$(git rev-parse --show-toplevel 2>/dev/null)\" || true",
-            "timeout": 30
+            "command": "\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/code-review-graph.sh\" update",
+            "timeout": 30,
+            "async": true
           }
         ]
       }
@@ -56,7 +117,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat >/dev/null || true; command -v code-review-graph >/dev/null 2>&1 || exit 0; git rev-parse --git-dir >/dev/null 2>&1 && code-review-graph status --repo \"$(git rev-parse --show-toplevel 2>/dev/null)\" || echo 'Not a git repo, skipping'",
+            "command": "\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/code-review-graph.sh\" status",
             "timeout": 10
           }
         ]
@@ -80,7 +141,5 @@
     "context-mode@context-mode": true,
     "ast-grep@ast-grep-marketplace": true
   },
-  "enabledMcpjsonServers": [
-    "code-review-graph"
-  ]
+  "enabledMcpjsonServers": ["code-review-graph", "playwright"]
 }
