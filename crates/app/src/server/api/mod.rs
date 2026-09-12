@@ -108,6 +108,7 @@ pub mod work;
 pub mod workspace_custom_apps;
 pub mod workspace_logo;
 pub mod workspace_members;
+pub mod workspace_org;
 pub mod workspace_oxy_access;
 pub mod workspaces;
 pub mod world_model;

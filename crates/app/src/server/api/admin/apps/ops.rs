@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use chrono::Utc;
 use entity::apps;
 use entity::organizations;
-use entity::prelude::{AppBuilds, Apps, Organizations, Workspaces};
+use entity::prelude::{AppBuilds, Apps, Organizations};
 use oxy_shared::utils::slugify;
 use sea_orm::ActiveModelTrait;
 use sea_orm::ActiveValue;
@@ -19,6 +19,8 @@ use sea_orm::QueryFilter;
 use sea_orm::QueryOrder;
 use sea_orm::QuerySelect;
 use uuid::Uuid;
+
+use crate::server::api::workspace_org::{WorkspaceOrgMatch, workspace_in_org};
 
 use super::dto::{ApiErr, AppResponse, ErrorBody};
 
@@ -798,7 +800,9 @@ pub(super) async fn slug_taken_in_org(
 /// it — so a row naming another org's workspace runs this org's app on that
 /// tenant's data. This is a data-integrity rule, not an access decision: no
 /// caller, however privileged, may write that row. Same rule as
-/// `custom_apps_publish::validate_project`.
+/// `custom_apps_publish::validate_project`, and literally the same predicate:
+/// both go through [`crate::server::api::workspace_org`], so the two cannot
+/// drift apart on what counts as in-org.
 ///
 /// A missing workspace, an orphaned one (no `org_id`) and one in another org all
 /// get the same **422** and the same body. Telling them apart would tell a
@@ -810,18 +814,17 @@ pub(super) async fn ensure_workspace_in_org(
     workspace_id: Uuid,
     org_id: Uuid,
 ) -> Result<(), ApiErr> {
-    let ws = Workspaces::find_by_id(workspace_id)
-        .one(db)
+    let matched = workspace_in_org(db, workspace_id, org_id)
         .await
         .map_err(|e| {
             tracing::error!("Workspace lookup failed for {workspace_id}: {e}");
             internal(e)
         })?;
-    let reason = match ws {
-        Some(w) if w.org_id == Some(org_id) => return Ok(()),
-        Some(w) if w.org_id.is_none() => "workspace has no org",
-        Some(_) => "workspace belongs to another org",
-        None => "workspace does not exist",
+    let reason = match matched {
+        WorkspaceOrgMatch::InOrg => return Ok(()),
+        WorkspaceOrgMatch::Orphaned => "workspace has no org",
+        WorkspaceOrgMatch::OtherOrg => "workspace belongs to another org",
+        WorkspaceOrgMatch::Missing => "workspace does not exist",
     };
     tracing::warn!(
         workspace_id = %workspace_id, org_id = %org_id, reason,

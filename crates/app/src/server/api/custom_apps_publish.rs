@@ -38,6 +38,7 @@ use super::{
     custom_apps_asset_manifest as asset_manifest, custom_apps_auth,
     custom_apps_build_store as store, custom_apps_bundle_cache as cache,
     custom_apps_migrations as migrations, custom_apps_precompress as precompress,
+    workspace_org::{WorkspaceOrgMatch, workspace_in_org},
 };
 
 /// How many builds to retain per app. Older builds (not currently pointed
@@ -404,18 +405,23 @@ async fn org_for_project(
 /// Best-effort cross-org guard: if the project id resolves to a workspace,
 /// its org must match. Unknown ids are rejected so a typo can't silently
 /// create a row pointing at nothing.
+///
+/// Defers to the shared [`super::workspace_org`] predicate — the same one the
+/// admin create/move endpoints use — and collapses all three of its failure
+/// answers into one `UnknownProject`, which says only that this org has no such
+/// project. Telling a missing workspace apart from another tenant's would leak
+/// that the id exists somewhere.
 async fn validate_project(
     db: &DatabaseConnection,
     project_id: Uuid,
     org_id: Uuid,
     org_slug: &str,
 ) -> Result<(), PublishError> {
-    let ws = workspaces::Entity::find_by_id(project_id)
-        .one(db)
+    let matched = workspace_in_org(db, project_id, org_id)
         .await
         .map_err(|e| PublishError::Db(e.to_string()))?;
-    match ws {
-        Some(w) if w.org_id == Some(org_id) => Ok(()),
+    match matched {
+        WorkspaceOrgMatch::InOrg => Ok(()),
         _ => Err(PublishError::UnknownProject(
             project_id,
             org_slug.to_string(),
@@ -690,7 +696,8 @@ impl AppMutationRollback {
 /// move no data.
 ///
 /// The one exception: the app's workspace is not a live workspace of the app's
-/// org. That covers three cases:
+/// org — the shared [`super::workspace_org`] predicate answering anything but
+/// `InOrg`. That covers three cases, one per failing variant:
 ///
 /// - **Deleted.** `apps.project_id` has no foreign key, and deleting a
 ///   workspace leaves `apps` alone.
@@ -720,14 +727,10 @@ async fn ensure_same_workspace(
     if existing.project_id == input.project_id {
         return Ok(false);
     }
-    let current = workspaces::Entity::find_by_id(existing.project_id)
-        .one(db)
+    let current = workspace_in_org(db, existing.project_id, existing.org_id)
         .await
         .map_err(|e| PublishError::Db(e.to_string()))?;
-    if current
-        .as_ref()
-        .is_none_or(|w| w.org_id != Some(existing.org_id))
-    {
+    if current != WorkspaceOrgMatch::InOrg {
         return Ok(true);
     }
     Err(PublishError::ProjectMismatch {
