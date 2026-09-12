@@ -52,9 +52,15 @@ pub(super) fn check_magic_link_rate_limit(email: &str) -> Option<u64> {
     }
 }
 
-/// Cookie lifetime — matches the JWT exp window in `create_auth_token`. If
-/// the JWT lifetime ever changes, change both together.
-const SESSION_COOKIE_MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
+/// The session window: how long a minted JWT stays valid, and how long the
+/// cookie carrying it lives.
+///
+/// ONE constant, read by both `create_auth_token` and [`build_session_cookie`],
+/// because the two drifting apart is a real bug rather than an untidiness: a
+/// cookie outliving its JWT leaves the browser holding a dead credential and
+/// 401ing on every call instead of re-prompting, which is exactly what
+/// `frontline.rs` hit when the shift TTL was enforced by the JWT `exp` alone.
+pub(super) const SESSION_TTL_SECS: i64 = 30 * 24 * 60 * 60;
 
 /// Build the `Set-Cookie` header value for the session cookie that wraps
 /// the existing JWT. Carrying the JWT in a `.oxygen-hq.com`-scoped cookie lets
@@ -66,7 +72,7 @@ const SESSION_COOKIE_MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
 /// (set to `.oxygen-hq.com` in prod). When unset, the cookie is host-only —
 /// fine for local dev where there are no subdomains to gate.
 pub fn build_session_cookie(jwt: &str, secure: bool) -> String {
-    build_session_cookie_with_max_age(jwt, secure, SESSION_COOKIE_MAX_AGE_SECS)
+    build_session_cookie_with_max_age(jwt, secure, SESSION_TTL_SECS)
 }
 
 /// As [`build_session_cookie`], with the browser's copy expiring alongside the

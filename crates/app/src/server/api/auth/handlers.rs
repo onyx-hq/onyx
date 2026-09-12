@@ -178,14 +178,18 @@ pub async fn get_config(
     Ok(Json(config))
 }
 
-/// Mint a session token with the default one-week window.
+/// Mint a session token with the default thirty-day window.
+///
+/// The window is [`super::ops::SESSION_TTL_SECS`], shared with the cookie that
+/// wraps this JWT so the two cannot drift.
 pub async fn create_auth_token(user: users::Model) -> Result<String, StatusCode> {
-    create_auth_token_with_ttl(user, Duration::weeks(1)).await
+    create_auth_token_with_ttl(user, Duration::seconds(super::ops::SESSION_TTL_SECS)).await
 }
 
 /// Mint a session token with an explicit lifetime.
 ///
-/// Split out for frontline sign-in, which gets twelve hours rather than a week:
+/// Split out for frontline sign-in, which gets twelve hours rather than the
+/// thirty-day default:
 /// that credential was proved by four digits typed on a shared tablet, and it
 /// should not outlive the shift. Sharing the minting path rather than writing a
 /// second one keeps there being exactly one place a session is created.

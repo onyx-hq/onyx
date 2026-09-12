@@ -371,10 +371,10 @@ fn shift_session_headers(token: &str, req_headers: &HeaderMap) -> HeaderMap {
     // same box worked. `is_request_secure` also honours `X-Forwarded-Proto`,
     // which matters behind an ingress terminating TLS with neither env var set.
     //
-    // Max-Age from SHIFT_HOURS, not the 7-day default. The shift TTL was only
-    // enforced by the JWT `exp`, so the browser kept a dead cookie for another
-    // six days — the morning after a shift the kiosk looked signed in and 401'd
-    // on every call instead of showing the name picker.
+    // Max-Age from SHIFT_HOURS, not the 30-day default. The shift TTL was only
+    // enforced by the JWT `exp`, so the browser kept a dead cookie for the rest
+    // of that window — the morning after a shift the kiosk looked signed in and
+    // 401'd on every call instead of showing the name picker.
     let secure = super::auth::is_request_secure(req_headers);
     if let Ok(v) = header::HeaderValue::from_str(&super::auth::build_session_cookie_with_max_age(
         token,
