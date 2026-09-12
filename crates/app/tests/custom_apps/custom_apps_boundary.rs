@@ -108,6 +108,18 @@ const ALLOWED_SEAMS: &[Seam] = &[
                data behind the app, like the secret manager: a platform fact every tenant's \
                app consumes, never one an app writes.",
     },
+    Seam {
+        prefix: "crate::server::api::workspace_org",
+        why: "the \"is this workspace a live workspace of this org?\" predicate. \
+               custom_apps_publish asks it twice — the cross-org guard (`validate_project`) \
+               and the re-home rule (`ensure_same_workspace`) — and the admin apps \
+               create/move endpoints ask the same question; one shared answer is what keeps \
+               publish and the admin API from disagreeing about the same row (#3175). A pure \
+               leaf — `entity::workspaces` and one `find_by_id`, no `AppState` — so at a \
+               Functions-crate cut it moves DOWN into `oxy-app-core` (already on entity + \
+               sea-orm), as `build_pretty_url` moved to `oxy_shared`, rather than into \
+               custom-apps, which would make admin depend on it.",
+    },
 ];
 
 /// Compute a file's module path (`crate::a::b`) from its path relative to `src/`.
