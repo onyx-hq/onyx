@@ -159,6 +159,18 @@ pub enum PublishError {
         "build {build_id:?} already exists for app {app_slug:?} — a build id must be unique per publish because its stored bytes are immutable and cached by id. Pass a different --build-id."
     )]
     DuplicateBuild { app_slug: String, build_id: String },
+    /// The app already exists in a different workspace than this publish
+    /// names. Surfaced as 409 — see `ensure_same_workspace` for why a
+    /// publish, draft or not, never moves an app.
+    #[error(
+        "app {app_slug:?} belongs to workspace {existing_project}, but this publish targets workspace {requested_project}. A publish never moves an app to another workspace: publish with --project {existing_project}. To move the app, an app admin changes its workspace first (PATCH /api/customer-apps/{app_id} with {{\"project_id\": \"{requested_project}\"}}, e.g. `oxyc api -X PATCH /api/customer-apps/{app_id} -f project_id={requested_project}`), then publishes again."
+    )]
+    ProjectMismatch {
+        app_slug: String,
+        app_id: Uuid,
+        existing_project: Uuid,
+        requested_project: Uuid,
+    },
     /// The `build_id` cannot safely become a store key / path segment.
     /// Surfaced as 422 — see `custom_apps_build_store::is_valid_build_id`.
     #[error(
@@ -212,7 +224,9 @@ impl PublishError {
             PublishError::BadTarball(_) | PublishError::Invalid(_) => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
-            PublishError::DuplicateBuild { .. } => StatusCode::CONFLICT,
+            PublishError::DuplicateBuild { .. } | PublishError::ProjectMismatch { .. } => {
+                StatusCode::CONFLICT
+            }
             PublishError::InvalidBuildId(_) | PublishError::InvalidSlug(_) => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
@@ -566,11 +580,16 @@ async fn build_id_taken(
 /// without scanning the diff.
 /// How to undo the app-row mutation `upsert_app` made, if a later step fails
 /// before the build is durable. The row is mutated up front (a brand-new app
-/// needs its id minted, and an existing one is repointed at the new
-/// project/branch), so a failure in `put_build` must not leave a live app
-/// pointing at a different workspace while it still serves the OLD bytes —
-/// `window.__OXY_APP__.projectId` is read from this row, so that silently
-/// redirects a working bundle at another tenant's data plane.
+/// needs its id minted, and an existing one gets the new branch/name), so a
+/// failure in `put_build` must not leave a half-published row behind.
+///
+/// An existing app's `project_id` is written only to re-home an app whose
+/// workspace is deleted, orphaned or in another org — any other publish that
+/// names another workspace is refused by `ensure_same_workspace`. Restoring it
+/// here undoes that re-home on a failed publish, and is otherwise a no-op kept
+/// as defence in depth:
+/// `window.__OXY_APP__.projectId` is read from this row, and a wrong value
+/// redirects a working bundle at another workspace's data plane.
 enum AppMutationRollback {
     /// Newly created — undo by deleting the row.
     Created,
@@ -649,6 +668,68 @@ impl AppMutationRollback {
     }
 }
 
+/// Refuse a publish that names a different workspace than the app lives in.
+///
+/// `apps.project_id` is what `window.__OXY_APP__.projectId` is injected from,
+/// and what the app's connectors, secrets and schedules resolve against. A
+/// publish used to overwrite it — drafts included, since the draft and live
+/// channels share the one row — so a draft publish with a different
+/// `--project` silently moved the LIVE app onto another workspace's data.
+/// Moving an app is an explicit admin action (`PATCH /api/customer-apps/{id}`),
+/// never a side effect of shipping a build.
+///
+/// `branch` and `name` stay overwritable on publish: they label the app and
+/// move no data.
+///
+/// The one exception: the app's workspace is not a live workspace of the app's
+/// org. That covers three cases:
+///
+/// - **Deleted.** `apps.project_id` has no foreign key, and deleting a
+///   workspace leaves `apps` alone.
+/// - **Orphaned.** The workspace exists but its `org_id` is NULL.
+/// - **In another org.** The admin `PATCH /api/customer-apps/{id}` wrote
+///   `project_id` without checking the workspace's org until #3174, so rows
+///   written before that fix can name another org's workspace.
+///
+/// Refusing any of these is a dead end, because the `--project` the 409 names
+/// cannot repair the app. A deleted workspace is gone, and an orphaned one
+/// belongs to no org. Another org's workspace fails `validate_project` when the
+/// publisher names this org, and otherwise resolves to that org, where
+/// `find_app` misses this app and the publish registers a second one. Moving
+/// the app by PATCH is app-admin only. Returns `Ok(true)` for the re-home,
+/// which the caller writes, and `Ok(false)` when the workspaces already match.
+///
+/// A re-home never moves an app onto a workspace outside its own org, because
+/// of what `publish` resolved first: `org` contains `input.project_id`
+/// (`validate_project` when the publisher named an org, `org_for_project`
+/// derives the org from the workspace when it did not), and `existing` was
+/// found by `find_app` under that same `org.id`.
+async fn ensure_same_workspace(
+    db: &DatabaseConnection,
+    existing: &apps::Model,
+    input: &PublishInput,
+) -> Result<bool, PublishError> {
+    if existing.project_id == input.project_id {
+        return Ok(false);
+    }
+    let current = workspaces::Entity::find_by_id(existing.project_id)
+        .one(db)
+        .await
+        .map_err(|e| PublishError::Db(e.to_string()))?;
+    if current
+        .as_ref()
+        .is_none_or(|w| w.org_id != Some(existing.org_id))
+    {
+        return Ok(true);
+    }
+    Err(PublishError::ProjectMismatch {
+        app_slug: existing.slug.clone(),
+        app_id: existing.id,
+        existing_project: existing.project_id,
+        requested_project: input.project_id,
+    })
+}
+
 async fn upsert_app(
     db: &DatabaseConnection,
     org: &organizations::Model,
@@ -657,7 +738,12 @@ async fn upsert_app(
     let now = Utc::now().fixed_offset();
     let existing = find_app(db, org.id, &input.app_slug).await?;
     if let Some(row) = existing {
+        // Authoritative check, before the row is touched. The fast path in
+        // `publish` catches this before the bundle is unpacked, but the row can
+        // change between the two reads.
+        let rehome = ensure_same_workspace(db, &row, input).await?;
         let id = row.id;
+        let slug = row.slug.clone();
         // Snapshot the fields this update overwrites, so a later failure can
         // restore them rather than stranding the app on a half-publish.
         let prior = AppMutationRollback::Updated {
@@ -666,8 +752,13 @@ async fn upsert_app(
             name: row.name.clone(),
             last_synced_at: row.last_synced_at,
         };
+        let stray_workspace = row.project_id;
         let mut active: apps::ActiveModel = row.into();
-        active.project_id = ActiveValue::Set(input.project_id);
+        // `project_id` is written only for a re-home: otherwise
+        // `ensure_same_workspace` above has already proved it equal.
+        if rehome {
+            active.project_id = ActiveValue::Set(input.project_id);
+        }
         if let Some(b) = &input.branch {
             active.branch = ActiveValue::Set(b.clone());
         }
@@ -680,6 +771,13 @@ async fn upsert_app(
             .update(db)
             .await
             .map_err(|e| PublishError::Db(e.to_string()))?;
+        if rehome {
+            tracing::warn!(
+                "publish re-homed app {}/{slug} ({id}) from workspace {stray_workspace} (deleted, orphaned, or in another org) to workspace {}",
+                org.slug,
+                input.project_id
+            );
+        }
         return Ok((id, false, prior));
     }
 
@@ -1103,13 +1201,17 @@ pub async fn publish(mut input: PublishInput) -> Result<PublishResult, PublishEr
     if !crate::server::api::admin::apps::is_valid_slug(&input.app_slug) {
         return Err(PublishError::InvalidSlug(input.app_slug.clone()));
     }
-    if let Some(app) = find_app(&db, org.id, &input.app_slug).await?
-        && build_id_taken(&db, app.id, &input.build_id).await?
-    {
-        return Err(PublishError::DuplicateBuild {
-            app_slug: input.app_slug.clone(),
-            build_id: input.build_id.clone(),
-        });
+    if let Some(app) = find_app(&db, org.id, &input.app_slug).await? {
+        // Same fast-path reasoning for a publish that names another workspace:
+        // refuse it before inflating the bundle. `upsert_app` re-checks, and is
+        // the one that writes a re-home.
+        ensure_same_workspace(&db, &app, &input).await?;
+        if build_id_taken(&db, app.id, &input.build_id).await? {
+            return Err(PublishError::DuplicateBuild {
+                app_slug: input.app_slug.clone(),
+                build_id: input.build_id.clone(),
+            });
+        }
     }
 
     // Decompress off the async runtime: even bounded at 256 MiB, the inflate +
@@ -1778,6 +1880,29 @@ mod tests {
         assert!(
             msg.contains("--build-id"),
             "the error must tell the publisher how to proceed: {msg}"
+        );
+    }
+
+    /// Naming another workspace conflicts with the existing row; the bundle is
+    /// fine. The message names both workspaces and the deliberate way to move
+    /// an app, because the CLI surfaces the raw body.
+    #[test]
+    fn project_mismatch_is_a_conflict_and_names_both_workspaces_and_the_move() {
+        let (app_id, existing, requested) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let e = PublishError::ProjectMismatch {
+            app_slug: "bookkeeping".to_string(),
+            app_id,
+            existing_project: existing,
+            requested_project: requested,
+        };
+        assert_eq!(e.status(), StatusCode::CONFLICT);
+        let msg = e.to_string();
+        assert!(msg.contains("bookkeeping"), "{msg}");
+        assert!(msg.contains(&format!("--project {existing}")), "{msg}");
+        assert!(msg.contains(&requested.to_string()), "{msg}");
+        assert!(
+            msg.contains(&format!("PATCH /api/customer-apps/{app_id}")),
+            "the error must name the admin path that moves an app: {msg}"
         );
     }
 }
