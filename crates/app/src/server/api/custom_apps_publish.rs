@@ -186,6 +186,14 @@ pub enum PublishError {
         "invalid app slug {0:?} — use 1–63 lowercase letters, digits and single hyphens (no leading/trailing/double hyphen, no underscore)"
     )]
     InvalidSlug(String),
+    /// The manifest declares functions whose bundled JS the bundle does not
+    /// carry. Surfaced as 422 — see `missing_function_artifacts`.
+    #[error(
+        "oxy-app.json declares {} function(s) with no bundled artifact: {}. Each declared function must ship in the bundle as functions/<name>.js; `oxy publish` bundles them from oxy CLI 0.5.96. Upgrade the oxy CLI (>= 0.5.96), run `oxy publish` from the app directory that holds oxy-app.json, and publish again.",
+        .missing.len(),
+        .missing.join(", ")
+    )]
+    MissingFunctionArtifacts { missing: Vec<String> },
     /// A fast bundle-validation check failed (design doc §8, gate 1). Carries an
     /// actionable check/message/remediation; surfaced as 422.
     #[error("{0}")]
@@ -227,9 +235,9 @@ impl PublishError {
             PublishError::DuplicateBuild { .. } | PublishError::ProjectMismatch { .. } => {
                 StatusCode::CONFLICT
             }
-            PublishError::InvalidBuildId(_) | PublishError::InvalidSlug(_) => {
-                StatusCode::UNPROCESSABLE_ENTITY
-            }
+            PublishError::InvalidBuildId(_)
+            | PublishError::InvalidSlug(_)
+            | PublishError::MissingFunctionArtifacts { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             PublishError::Migration(e) => {
                 if e.is_retryable() {
                     StatusCode::CONFLICT
@@ -883,9 +891,10 @@ fn function_specs(manifest_json: Option<&serde_json::Value>) -> Vec<(String, ser
 /// (`oxy publish`), the vite-plugin build gate, and the SDK manifest loader all
 /// mirror it, and `custom_apps_serve::sources::s3_object_key` relies on every
 /// stored name matching it to prove a rewritten request path can never resolve
-/// to a function artifact. Enforced at publish by [`record_functions`] so a
-/// bundle POSTed straight to the API — bypassing the CLI — can't store a name
-/// that breaks the invariant.
+/// to a function artifact. Enforced at publish by [`check_declared_functions`],
+/// before the build is stored, so a bundle POSTed straight to the API —
+/// bypassing the CLI — can't store a name that breaks the invariant;
+/// [`record_functions`] checks it a second time, as defence in depth.
 pub(crate) fn is_valid_function_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
@@ -917,6 +926,53 @@ fn function_artifact_key(build_prefix: &str, name: &str) -> String {
     format!("{build_prefix}functions/{name}.js")
 }
 
+/// Declared functions whose bundled JS (`functions/<name>.js`, the key
+/// [`function_artifact_key`] records) the bundle does not carry, sorted.
+///
+/// Without this check such a bundle published with a 200: `record_functions`
+/// wrote a row per declared function pointing at an artifact that was never
+/// uploaded, so the app went live with every one of those functions broken.
+/// That is what an `oxy` CLI older than 0.5.96 produces for an app with
+/// functions, because it never bundled them.
+fn missing_function_artifacts(
+    files: &[(String, Vec<u8>)],
+    specs: &[(String, serde_json::Value)],
+) -> Vec<String> {
+    if specs.is_empty() {
+        return Vec::new();
+    }
+    let present: std::collections::HashSet<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+    let mut missing: Vec<String> = specs
+        .iter()
+        .map(|(name, _)| name)
+        .filter(|name| !present.contains(function_artifact_key("", name).as_str()))
+        .cloned()
+        .collect();
+    missing.sort();
+    missing
+}
+
+/// Refuse a bundle whose manifest declares a function it cannot ship: an
+/// invalid function name first, then a declared function without its bundled
+/// JS. Split out of `publish` so the order is unit-testable without a database.
+///
+/// Names go first because an invalid one (`Bad_Name`, `../../evil`) has no
+/// `functions/<name>.js` either: the CLI refuses to bundle it, and a traversal
+/// name cannot be a tar entry at all. Checking artifacts first reported it as
+/// missing and told the publisher to upgrade the CLI, instead of naming the
+/// function that is wrong.
+fn check_declared_functions(
+    files: &[(String, Vec<u8>)],
+    specs: &[(String, serde_json::Value)],
+) -> Result<(), PublishError> {
+    validate_function_names(specs)?;
+    let missing = missing_function_artifacts(files, specs);
+    if !missing.is_empty() {
+        return Err(PublishError::MissingFunctionArtifacts { missing });
+    }
+    Ok(())
+}
+
 /// Record one `app_functions` row per declared function, keyed to this build,
 /// so the `/fn/<name>` route can resolve them. Without this the bundled JS
 /// ships in the build store but the runtime can never find it (→ 404).
@@ -930,7 +986,9 @@ async fn record_functions(
     // Names become artifact-key path segments + `/fn/<name>` route keys; a bundle
     // published straight through the API skips the CLI's check, so enforce the
     // shape here — the load-bearing spot for `sources::s3_object_key`. Reject the
-    // whole publish (the caller rolls the stored build back out).
+    // whole publish (the caller rolls the stored build back out). `publish`
+    // already checked this before storing anything (`check_declared_functions`);
+    // this stays as defence in depth.
     validate_function_names(specs)?;
     for (name, spec) in specs {
         let model = app_functions::ActiveModel {
@@ -1246,6 +1304,12 @@ pub async fn publish(mut input: PublishInput) -> Result<PublishResult, PublishEr
     // same way in the handler.)
     let manifest_json = parse_embedded_manifest(&files)?.or_else(|| input.manifest.clone());
 
+    // Every declared function must be validly named and ship its bundled JS.
+    // Checked here, before the row or a single byte is written: a bundle
+    // without them used to go live with a 200 and every function missing.
+    let fn_specs = function_specs(manifest_json.as_ref());
+    check_declared_functions(&files, &fn_specs)?;
+
     // Lift the bundle's declared `*.sql` migrations out NOW, while `files` is
     // still in hand and before a single byte has been stored. Three things this
     // ordering buys, none of which survive doing it later:
@@ -1357,9 +1421,8 @@ pub async fn publish(mut input: PublishInput) -> Result<PublishResult, PublishEr
             return Err(e.into());
         }
     };
-    // Capture the function specs + build prefix before `record_build` consumes
-    // `manifest_json` and `s3_prefix`.
-    let fn_specs = function_specs(manifest_json.as_ref());
+    // Capture the build prefix before `record_build` consumes `s3_prefix`
+    // (`fn_specs` was taken from `manifest_json` above).
     let build_prefix = s3_prefix.clone();
     // Bytes are now stored. If recording the row or moving the pointer fails,
     // roll the orphaned build back out so a partial publish leaves no
@@ -1788,6 +1851,86 @@ mod tests {
         assert_eq!(
             function_artifact_key("customer-apps/abc/builds/v1/", "top-stores"),
             "customer-apps/abc/builds/v1/functions/top-stores.js"
+        );
+    }
+
+    #[test]
+    fn missing_function_artifacts_lists_declared_functions_the_bundle_lacks() {
+        let specs = function_specs(Some(&serde_json::json!({
+            "functions": { "top-stores": {}, "notify": {}, "digest": {} }
+        })));
+        let files = vec![
+            ("index.html".to_string(), b"<html>".to_vec()),
+            (
+                "functions/notify.js".to_string(),
+                b"export default 1".to_vec(),
+            ),
+            // Neither a source file nor a differently-named artifact counts.
+            ("functions/top-stores.ts".to_string(), b"x".to_vec()),
+            ("assets/digest.js".to_string(), b"x".to_vec()),
+        ];
+        assert_eq!(
+            missing_function_artifacts(&files, &specs),
+            vec!["digest".to_string(), "top-stores".to_string()]
+        );
+    }
+
+    #[test]
+    fn missing_function_artifacts_is_empty_when_all_ship_or_none_are_declared() {
+        let specs = function_specs(Some(&serde_json::json!({ "functions": { "notify": {} } })));
+        let files = vec![
+            ("index.html".to_string(), b"<html>".to_vec()),
+            ("functions/notify.js".to_string(), b"x".to_vec()),
+        ];
+        assert!(missing_function_artifacts(&files, &specs).is_empty());
+        assert!(missing_function_artifacts(&files, &function_specs(None)).is_empty());
+    }
+
+    #[test]
+    fn an_invalid_function_name_without_an_artifact_gets_the_invalid_name_error() {
+        // Neither name has a bundled artifact. Checked the other way round, both
+        // came back as MissingFunctionArtifacts ("upgrade the CLI"), which sends
+        // the publisher after the wrong problem.
+        let files = vec![("index.html".to_string(), b"<html>".to_vec())];
+        for name in ["Bad_Name", "../../evil"] {
+            let specs = vec![(name.to_string(), serde_json::json!({}))];
+            let err = check_declared_functions(&files, &specs).unwrap_err();
+            assert!(
+                matches!(&err, PublishError::BadTarball(m)
+                    if m.contains("invalid function name") && m.contains(name)),
+                "expected the invalid-name error for {name:?}, got {err:?}"
+            );
+        }
+
+        // A valid name without its artifact is still reported as missing, and
+        // passes once the artifact ships.
+        let specs = vec![("notify".to_string(), serde_json::json!({}))];
+        match check_declared_functions(&files, &specs) {
+            Err(PublishError::MissingFunctionArtifacts { missing }) => {
+                assert_eq!(missing, vec!["notify".to_string()]);
+            }
+            other => panic!("expected MissingFunctionArtifacts, got {other:?}"),
+        }
+        let mut shipped = files.clone();
+        shipped.push(("functions/notify.js".to_string(), b"x".to_vec()));
+        assert!(check_declared_functions(&shipped, &specs).is_ok());
+    }
+
+    /// The bundle is well-formed but incomplete for what it declares: 422, and
+    /// the message names the functions and the remedy, because the CLI prints
+    /// the raw body.
+    #[test]
+    fn missing_function_artifacts_is_unprocessable_and_names_the_remedy() {
+        let e = PublishError::MissingFunctionArtifacts {
+            missing: vec!["notify".to_string(), "top-stores".to_string()],
+        };
+        assert_eq!(e.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let msg = e.to_string();
+        assert!(msg.contains("notify, top-stores"), "{msg}");
+        assert!(msg.contains("functions/<name>.js"), "{msg}");
+        assert!(
+            msg.contains("0.5.96"),
+            "names the CLI version to upgrade to: {msg}"
         );
     }
 

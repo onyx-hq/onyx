@@ -22,6 +22,7 @@ mod custom_app_storage_routes;
 mod custom_app_visibility;
 mod custom_apps_boundary;
 mod custom_apps_cache_invalidation;
+mod custom_apps_publish_function_artifacts;
 mod custom_apps_publish_workspace;
 mod example_app_serving;
 mod seed_example_app;
