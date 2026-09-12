@@ -59,7 +59,7 @@ pub struct Model {
     pub repo_path: Option<String>,
     /// Points at the `app_builds` row currently serving the `draft`
     /// channel (admin preview via `?channel=draft`). Set on every
-    /// `oxy publish`. NULL until the first publish in the new pipeline;
+    /// `oxyc publish`. NULL until the first publish in the new pipeline;
     /// legacy `s3` rows keep NULL and fall back to state-dir serving.
     pub draft_build_id: Option<Uuid>,
     /// Points at the `app_builds` row currently serving the `published`

@@ -319,7 +319,7 @@ pub struct BuildSummary {
     /// Email of the app-admin who ran the publish. `None` for builds
     /// created before the `published_by` column existed.
     pub published_by_email: Option<String>,
-    /// Git provenance captured by `oxy publish` (all `None` for legacy /
+    /// Git provenance captured by `oxyc publish` (all `None` for legacy /
     /// non-git builds). `source_repo` is the raw remote URL; the frontend
     /// normalizes it to a GitHub link against `commit_sha`.
     pub source_repo: Option<String>,

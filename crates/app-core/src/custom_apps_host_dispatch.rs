@@ -214,7 +214,7 @@ pub async fn subdomain_rewrite_middleware(request: Request, next: Next) -> Respo
 /// `/customer-apps/<org>/<slug>/customer-apps/<org>/<slug>/...` and
 /// 404 every asset.
 ///
-/// This is the common case for S3-source apps (`oxy publish`): the
+/// This is the common case for S3-source apps (`oxyc publish`): the
 /// bundle was built with `OXY_APP_BASE_PATH=/customer-apps/<org>/<slug>/`
 /// baked into every asset URL, so the very first HTML response on the
 /// subdomain contains `<script src="/customer-apps/<org>/<slug>/_next/...">`.

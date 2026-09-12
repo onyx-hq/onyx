@@ -1,6 +1,6 @@
 //! `POST /api/customer-apps/publish` — the one-way publish entry point.
 //!
-//! CI (or a local `oxy publish`) uploads a gzipped tar of the built
+//! CI (or a local `oxyc publish`) uploads a gzipped tar of the built
 //! bundle. The service validates it, stores each file in S3 under a
 //! per-build prefix ([`super::custom_apps_build_store`]), records an
 //! `app_builds` row, upserts the `apps` row (creating it on first
@@ -274,7 +274,7 @@ const MAX_FILES: usize = 20_000;
 
 /// Parse the bundle's `oxy-app.json` if it ships one. A present-but-unparseable
 /// manifest is a hard error rather than a silent `None`: it is the canonical
-/// manifest `oxy publish` uploads, so dropping it strips the whole `functions`
+/// manifest `oxyc publish` uploads, so dropping it strips the whole `functions`
 /// block and publishes a function-less app. Absent → `Ok(None)` (the caller
 /// falls back to the explicit multipart `manifest` field).
 fn parse_embedded_manifest(
@@ -891,7 +891,7 @@ fn function_specs(manifest_json: Option<&serde_json::Value>) -> Vec<(String, ser
 
 /// Whether `name` is safe as a `/fn/<name>` route key and an artifact-key path
 /// segment. THE canonical function-name rule (`^[a-z][a-z0-9-]{0,63}$`): the CLI
-/// (`oxy publish`), the vite-plugin build gate, and the SDK manifest loader all
+/// (`oxyc publish`), the vite-plugin build gate, and the SDK manifest loader all
 /// mirror it, and `custom_apps_serve::sources::s3_object_key` relies on every
 /// stored name matching it to prove a rewritten request path can never resolve
 /// to a function artifact. Enforced at publish by [`check_declared_functions`],
@@ -923,7 +923,7 @@ fn validate_function_names(specs: &[(String, serde_json::Value)]) -> Result<(), 
 }
 
 /// Build-store key of a function's bundled JS artifact, matching the layout
-/// `oxy publish` uploads (`<build_prefix>functions/<name>.js`) and the
+/// `oxyc publish` uploads (`<build_prefix>functions/<name>.js`) and the
 /// `app_functions.artifact_key` contract.
 fn function_artifact_key(build_prefix: &str, name: &str) -> String {
     format!("{build_prefix}functions/{name}.js")
@@ -1300,7 +1300,7 @@ pub async fn publish(mut input: PublishInput) -> Result<PublishResult, PublishEr
     // didn't ship one.
     //
     // A present-but-unparseable oxy-app.json is a hard error, NOT a silent
-    // fall-through: `oxy-app.json` is the canonical manifest `oxy publish` ships,
+    // fall-through: `oxy-app.json` is the canonical manifest `oxyc publish` ships,
     // so swallowing its parse error strips the whole `functions` block and
     // publishes a function-less app with a 200 — then `useFunction` 404s and the
     // author is misdiagnosed. (The multipart `manifest` field is hardened the
@@ -1397,7 +1397,7 @@ pub async fn publish(mut input: PublishInput) -> Result<PublishResult, PublishEr
     //
     // Rejecting is the only option that keeps those three honest; overwriting
     // silently corrupts a build replicas have already cached. The CLI's default
-    // id is unique per run (`cli/commands/publish.rs`), so in practice this
+    // id is unique per run (`sdk/cli/src/publish/provenance.ts`), so in practice this
     // fires only on an explicitly reused `--build-id`.
     match build_id_taken(&db, app_id, &input.build_id).await {
         Ok(false) => {}
@@ -1506,7 +1506,7 @@ pub async fn publish(mut input: PublishInput) -> Result<PublishResult, PublishEr
 
     // The serve path caches the `apps` row — including the channel pointers
     // `set_pointers` just moved — so a publish must drop that cache or the new
-    // build stays invisible for up to the cache TTL. `oxy publish` is
+    // build stays invisible for up to the cache TTL. `oxyc publish` is
     // interactive and the engineer reloads immediately; a stale minute reads
     // as "my publish did nothing".
     //
@@ -1517,7 +1517,7 @@ pub async fn publish(mut input: PublishInput) -> Result<PublishResult, PublishEr
 
     // Warm the bundle LRU for everything on the critical path — the shell, the
     // asset manifest the serve path reads to build preload hints, and the entry
-    // chunks themselves. `oxy publish` is interactive: the engineer reloads
+    // chunks themselves. `oxyc publish` is interactive: the engineer reloads
     // within seconds, and without this every one of those is a cold
     // object-store read on the very request they are watching.
     if let Some(bytes) = index_bytes {
@@ -1793,7 +1793,7 @@ mod tests {
 
     #[test]
     fn embedded_manifest_present_but_malformed_is_rejected() {
-        // The canonical `oxy publish` path: a malformed oxy-app.json must 4xx,
+        // The canonical `oxyc publish` path: a malformed oxy-app.json must 4xx,
         // not silently strip the functions block and publish function-less.
         let files = vec![("oxy-app.json".to_string(), b"{ not: json".to_vec())];
         let err = parse_embedded_manifest(&files).unwrap_err();
@@ -2013,7 +2013,7 @@ mod tests {
 
     /// A reused build id is a conflict, not a bad request — the bundle is
     /// fine, the id is taken. The message has to name the remedy, because the
-    /// CLI surfaces the raw body (`cli/commands/publish.rs`).
+    /// CLI surfaces the raw body (`sdk/cli/src/publish/server.ts`).
     #[test]
     fn duplicate_build_is_a_conflict_and_names_the_remedy() {
         let e = PublishError::DuplicateBuild {

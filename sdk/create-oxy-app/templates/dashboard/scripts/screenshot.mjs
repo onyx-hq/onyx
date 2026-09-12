@@ -17,7 +17,7 @@
 //   pnpm run screenshot -- --settle 2500                  # extra ms after ready
 //
 // After it writes public/card.png, set `"art": "card.png"` in oxy-app.json,
-// rebuild, and `oxy publish`.
+// rebuild, and `oxyc publish`.
 //
 // Playwright is invoked on demand — it is NOT a default dependency of the
 // scaffold. If it is missing the script prints the one-liner to add it.
@@ -169,7 +169,7 @@ async function main() {
       });
     }
     console.log(`[screenshot] wrote ${OUT_PATH} (${CARD_WIDTH}x${CARD_HEIGHT})`);
-    console.log('[screenshot] set  "art": "card.png"  in oxy-app.json, then `oxy publish`.');
+    console.log('[screenshot] set  "art": "card.png"  in oxy-app.json, then `oxyc publish`.');
   } finally {
     if (browser) await browser.close();
     if (server) server.stop();

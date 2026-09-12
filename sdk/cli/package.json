@@ -1,6 +1,6 @@
 {
   "name": "@oxy-hq/cli",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "oxyc — the Oxy CLI: a gh-api-style client for the Oxy HTTP API, plus the customer-account tooling that scopes a session to one customer.",
   "type": "module",
   "bin": {

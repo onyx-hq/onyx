@@ -3,7 +3,7 @@
 # Copy this into the customer-apps repo as `.github/workflows/deploy.yml`
 # (drop the `.example` suffix).
 #
-# One-way deploy: build, then `oxy publish` uploads the bundle to oxy,
+# One-way deploy: build, then `oxyc publish` uploads the bundle to oxy,
 # which stores it in S3 as a versioned build and points the channel at
 # it. No `aws s3 sync`, no DB `ensure`, no `/sync` callback — the publish
 # endpoint does all of that server-side. CI talks only to oxy.
@@ -22,7 +22,7 @@
 # later via /admin/apps). Push to `production` adds `--promote` to deploy
 # straight to customers.
 #
-# Build ids: deliberately NOT pinned here. `oxy publish` derives one from
+# Build ids: deliberately NOT pinned here. `oxyc publish` derives one from
 # $GITHUB_SHA + $GITHUB_RUN_ID + $GITHUB_RUN_ATTEMPT, which is unique per
 # run. A bare `--build-id "${{ github.sha }}"` is NOT: promoting a commit
 # from `main` to `production` publishes the same sha twice, as do
@@ -31,11 +31,8 @@
 # cached by id), so the server rejects a reused one with 409. If you copied
 # this workflow out before this note existed, drop your `--build-id` line.
 #
-# This needs an `oxy` CLI from the release that introduced run-unique build
-# ids (0.5.121 or later). If you pin a version below (see the install step's
-# comment), pin at or above that — an older CLI with no `--build-id` line
-# falls back to a bare $GITHUB_SHA, which is exactly the collision this note
-# is about, and now a hard 409.
+# The publish step runs a pinned `@oxy-hq/cli` (`oxyc`) through npx — no
+# separate install. Bump the pin deliberately.
 # A build id also accepts only [A-Za-z0-9._-] (no leading dot, max 200), so
 # a hand-picked `--build-id release/v1` is rejected with 422.
 
@@ -78,10 +75,6 @@ jobs:
           npm ci
           npm run build
 
-      - name: Install oxy CLI
-        # Pin a version for production; this reference uses the installer.
-        run: curl -sSL https://oxygen-hq.com/install | sh
-
       # One call: uploads out/ to oxy → S3, records a versioned build, and
       # points the channel at it. `--promote` only on the production branch
       # so main stays a draft until an engineer promotes it in /admin/apps.
@@ -94,7 +87,7 @@ jobs:
           if [ "${{ github.ref }}" = "refs/heads/production" ]; then
             PROMOTE="--promote"
           fi
-          oxy publish \
+          npx --yes @oxy-hq/cli@0.4.0 publish \
             --target "${{ vars.OXY_TARGET }}" \
             --org "${{ vars.OXY_ORG_SLUG }}" \
             --app "${{ matrix.app.slug }}" \

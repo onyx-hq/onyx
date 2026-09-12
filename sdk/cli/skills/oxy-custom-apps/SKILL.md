@@ -1,6 +1,6 @@
 ---
 name: oxy-custom-apps
-description: Use when building, debugging, reviewing, or shipping an Oxy custom-app bundle (a code-first React/Vite app served by oxy), including writing Oxy Functions and driving them from the UI. Encodes the contract rules, pitfalls, performance guardrails, and the self-serve `oxy publish` ship flow.
+description: Use when building, debugging, reviewing, or shipping an Oxy custom-app bundle (a code-first React/Vite app served by oxy), including writing Oxy Functions and driving them from the UI. Encodes the contract rules, pitfalls, performance guardrails, and the self-serve `oxyc publish` ship flow.
 ---
 
 # Customer-app development
@@ -111,7 +111,7 @@ qualified.)
    `ctx` bridges to the data plane: `ctx.query` / `ctx.queryStream`,
    `ctx.semantic.query`, `ctx.warehouse.{insert,exec,upsert}`,
    `ctx.airway.run`, `ctx.fetch` (SSRF-allowlisted), `ctx.env`,
-   `ctx.user`, `ctx.log`. `oxy publish` bundles `functions/*.ts` with
+   `ctx.user`, `ctx.log`. `oxyc publish` bundles `functions/*.ts` with
    esbuild — no separate backend to stand up. Worked example +
    author-facing `ctx` types: `oxy-hq/customer-apps:
    examples/hello-oxy/functions/`.
@@ -119,7 +119,7 @@ qualified.)
 3. **`OXY_APP_BASE_PATH` must match the path the bundle is linked
    under.** `@oxy-hq/vite-plugin` resolves it from (in order):
    `OXY_APP_BASE_PATH` env → `orgSlug + slug` in `oxy-app.json` →
-   `/`. `oxy publish` sets that env to `/customer-apps/<org>/<slug>/`
+   `/`. `oxyc publish` sets that env to `/customer-apps/<org>/<slug>/`
    for the build automatically, and the vite-plugin derives the same
    from the manifest for `pnpm dev` / `pnpm build`. Mismatch → asset
    404s → blank dashboard.
@@ -270,16 +270,16 @@ asset base baked in.
 
 ## Publishing
 
-Ship with `oxy publish` — **no CI, no S3 sync, no folder picker**. From
+Ship with `oxyc publish` — **no CI, no S3 sync, no folder picker**. From
 the app directory (`oxy-hq/customer-apps: examples/hello-oxy/` is the worked
 shell; note its manifest deliberately carries no `orgSlug`, leaving the org to
 be resolved at publish time):
 
 ```bash
-oxy login --env production    # once; browser flow, caches a token,
-                              # and prints whether you're an app-admin
-oxy publish --env production           # build → tar → upload (draft channel)
-oxy publish --env production --promote # …straight to live
+oxyc login --env production    # once; browser flow, caches a token,
+                               # and prints whether you're an app-admin
+oxyc publish --env production           # build → tar → upload (draft channel)
+oxyc publish --env production --promote # …straight to live
 ```
 
 - **Identity** is the manifest's `slug` + `orgSlug` (override with
@@ -301,7 +301,7 @@ Full hands-on guide: `oxy-hq/customer-apps: docs/local-development.md`.
 ## Reading data while vibe-coding
 
 You don't need an `X-API-Key` to poke at the data API by hand — your
-`oxy login` token authenticates as a bearer. From an app directory:
+`oxyc login` token authenticates as a bearer. From an app directory:
 
 ```bash
 oxyc login --env local       # once; caches a token per host
@@ -319,7 +319,7 @@ curl -H "Authorization: Bearer $(oxyc token --env local)" \
 `oxyc api <path>` takes the path relative to `/api/`; `-X` sets the method
 (POST when a body is given), `-f`/`-F` set the body (string / JSON-typed),
 `--input` sends a raw one, `-i` includes response headers. `--env` resolves the
-same targets as `oxy publish` (`local` → the Vite dev server `:5173`, which
+same targets as `oxyc publish` (`local` → the Vite dev server `:5173`, which
 proxies `/api` → oxy `:3000`).
 
 Do not guess a path: `oxyc routes <filter>` lists what exists and

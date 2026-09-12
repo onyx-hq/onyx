@@ -131,7 +131,7 @@ export function App() {
             Replace <code>STARTER_SQL</code> with a query against your warehouse, point{" "}
             <code>TOPIC</code> at one of your semantic topics, edit the email in{" "}
             <code>emails/Welcome.tsx</code> (preview it with <code>pnpm email:dev</code>), then
-            ship it all with <code>oxy publish</code>.
+            ship it all with <code>oxyc publish</code>.
           </Note>
         </Panel>
       </main>

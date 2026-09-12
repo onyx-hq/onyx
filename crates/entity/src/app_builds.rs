@@ -28,7 +28,7 @@ pub struct Model {
     pub published_by: Option<Uuid>,
     /// Git remote URL of the app's source at publish time (raw, e.g.
     /// `git@github.com:org/repo.git` or `https://github.com/org/repo`).
-    /// Captured best-effort by `oxy publish`; NULL for non-git / legacy builds.
+    /// Captured best-effort by `oxyc publish`; NULL for non-git / legacy builds.
     pub source_repo: Option<String>,
     /// Commit sha the build was published from.
     pub commit_sha: Option<String>,

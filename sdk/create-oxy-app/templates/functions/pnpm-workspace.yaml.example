@@ -12,7 +12,7 @@
 # pnpm 10+ refuses to run a dependency's install scripts unless the project says
 # so, and `pnpm install` EXITS NON-ZERO on an undeclared one. esbuild has such a
 # script, so without this a freshly scaffolded app fails its very first install,
-# and `oxy publish` (which shells out to `pnpm exec esbuild`) fails with it.
+# and `oxyc publish` (which shells out to `pnpm exec esbuild`) fails with it.
 #
 # `false`, not `true`: esbuild ships its platform binary as an optional
 # dependency, so the install script is not needed to run it — the oxy repo root

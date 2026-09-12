@@ -5,7 +5,8 @@ manages customer workspace repos.
 
 - **API client** — `api`, `routes`, `schema`, `openapi`, `login`, `whoami`, `assume`
 - **Customer workspaces** — `list`, `new`, `import`, `doctor`, `update`, `adopt`, `launch`
-- **Development** — `validate`, `proxy`, `mcp`, `guide`, `skills`
+- **Custom apps** — `publish`, `init-ci`, `proxy`
+- **Development** — `validate`, `mcp`, `guide`, `skills`
 
 ## Install
 
@@ -145,8 +146,8 @@ oxyc logout
 `--login-env` is repeatable and comma-separated (`--login-env dev,staging`);
 the browser opens once per environment, in sequence.
 
-Credentials live in the OS config directory under **`oxy`**, shared with the
-Rust `oxy` binary — either tool's login authenticates both:
+Credentials live in the OS config directory under **`oxy`** — the same file the
+Rust `oxy login` wrote before it was removed, so an existing login still works:
 
 - macOS: `~/Library/Application Support/oxy/credentials.json`
 - Linux: `$XDG_CONFIG_HOME/oxy/credentials.json`
@@ -199,11 +200,52 @@ never touched.
 `launch` starts a Claude Code session scoped to one customer; `--here` runs in
 the current directory while granting access to the customer's repo.
 
+## Custom apps
+
+```bash
+oxyc publish [--env <e>] [--dir <path>] [--promote] [--build-only | --prebuilt] [--json]
+oxyc init-ci [--app <org>/<app>] [--environment <name>] [--force]
+oxyc proxy [--port <n>] [--allow-writes] [--allow-events] [--yes]
+```
+
+**`publish`**, from an app directory, runs `oxy-app.json`'s build (default
+`pnpm install`, `pnpm build`, output `out/`), bundles each declared Oxy Function
+with `pnpm exec esbuild` into `functions/<name>.js`, resolves the project from
+the target's public `build-config`, and uploads the bundle — to the **draft**
+channel unless `--promote`. `--env` defaults to **production**; name it.
+
+- **Identity**: `--org` / `--app`, then `OXY_ORG` / `OXY_APP`, then the manifest's
+  `orgSlug` / `slug`, then an `apps/<org>/<app>/` working directory. `--org`
+  takes a slug or a UUID. `--project` pins the workspace (and implies its org).
+- **`--dir`** publishes a pre-built directory instead of building; functions are
+  still bundled into it. **`--build-only`** stops after building and bundling —
+  no credential, no network unless the org must come from `--project`.
+  **`--prebuilt`** (with `--dir`) skips esbuild and refuses if a declared
+  function's `functions/<name>.js` is missing. The pair splits CI so the job that
+  runs package scripts never holds the credential.
+- **Auth**: the `--token-env` variable (`OXY_TOKEN`), then the login cache — or,
+  in a GitHub Actions job with `id-token: write` and neither set, **trusted
+  publishing**: the job's OIDC token is exchanged for a credential scoped to this
+  one app. That needs the org **slug** and a publisher registered for the
+  workflow (see `init-ci`).
+- **Provenance**: the checkout's `origin`, `HEAD` and branch (else `GITHUB_SHA` /
+  `GITHUB_REF_NAME`) are recorded; a missing half or a dirty app directory is a
+  warning, never a failure. The build id defaults to
+  `$GITHUB_SHA-$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT`, else random — a reused one is
+  a `409`.
+- `.env.local`, then `.env`, are read from the directory and its parents without
+  overriding the environment. The server's warnings print on stderr; `--json`
+  prints its result on stdout.
+
+**`init-ci`** writes `.github/workflows/oxy-publish.yml` at the repo root: a
+`build` job (no id-token) that runs `publish --build-only`, and an
+environment-gated `publish` job whose only work is `publish --prebuilt` with
+OIDC. It prints the `oxyc api …/publishers` call that registers the workflow.
+
 ## Development commands
 
 ```bash
 oxyc validate [-f <file>] [--json]
-oxyc proxy [--port <n>] [--allow-writes] [--allow-events] [--yes]
 oxyc mcp
 oxyc guide
 oxyc skills install | list
@@ -229,7 +271,9 @@ Structural checks only. `oxy validate` additionally resolves `databases:` and
 login token attached. Defaults: side-effecting calls are **held**, tracking
 events are **dropped**, auth endpoints reach the backend unauthenticated so
 sign-in works, and the cached token never overrides a real browser session. A
-production target is refused without `--yes`.
+production target (any host under `oxygen-hq.com`) is refused without `--yes`.
+Each Oxy Function call carries a W3C trace — the SDK's, or one minted here — and
+prints `↳ <status> fn <name>  request_id=…  trace_id=…`.
 
 **`mcp`** serves the API over stdio as four tools — `oxy_routes`, `oxy_schema`,
 `oxy_request`, `oxy_whoami` — rather than one per endpoint, so the tool schemas

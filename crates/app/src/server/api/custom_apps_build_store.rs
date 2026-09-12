@@ -9,7 +9,7 @@
 //!   cache ([`super::custom_apps_bundle_cache`]).
 //! - **Filesystem** (local dev, no bucket): files land under
 //!   `<OXY_STATE_DIR>/customer-apps/<app_id>/builds/<build_id>/` so an
-//!   engineer can `oxy serve` + `oxy publish` locally without MinIO/S3.
+//!   engineer can `oxy serve` + `oxyc publish` locally without MinIO/S3.
 //!
 //! Either way the logical key is [`build_prefix`]; it's recorded verbatim in
 //! `app_builds.s3_prefix` and interpreted as an S3 key or an FS subpath

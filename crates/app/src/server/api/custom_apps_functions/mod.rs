@@ -938,7 +938,7 @@ pub async fn handle_function_request(
         return json_error(
             StatusCode::NOT_FOUND,
             "AppNotPublished",
-            "this app has no published or draft build; run `oxy publish` first",
+            "this app has no published or draft build; run `oxyc publish` first",
         );
     };
 
@@ -1802,7 +1802,7 @@ async fn run_with_runtime(args: RunArgs<'_>) -> RunOutcome {
     // reported as an empty string that looks like a value. Recorded BEFORE the
     // run: the stderr JSON line copies the enclosing span's fields at the
     // moment of each event, so every `ctx.log()` line of this invocation
-    // carries `span.request_id` — the id the browser, `oxy proxy` and the
+    // carries `span.request_id` — the id the browser, `oxyc proxy` and the
     // operator logs endpoint all quote.
     if let Some(id) = args.request_id {
         span.record("request_id", tracing::field::display(id));

@@ -187,7 +187,7 @@ flate2 = { workspace = true }
 # Build-time brotli for bundle assets, so the serve path never re-compresses
 # an immutable content-hashed file — see server/api/custom_apps_precompress.rs.
 # rayon fans that compression across the bundle: it is the one-shot cost that
-# `oxy publish` makes an engineer wait on.
+# `oxyc publish` makes an engineer wait on.
 brotli = { workspace = true }
 rayon = { workspace = true }
 lru = { workspace = true }

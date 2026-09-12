@@ -64,7 +64,7 @@ const MIGRATION_DOC_URL =
 // served base path.
 const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const SLUG_MAX_LEN = 63;
-// Mirrors `is_valid_function_name` (cli/commands/publish.rs) — a function key is
+// Mirrors `is_valid_function_name` (server/api/custom_apps_publish.rs) — a function key is
 // interpolated into `functions/<name>.js`, so `../../x` must be rejected before
 // esbuild. Checked here so a bad name fails at `oxy build` too, not only at
 // publish.
@@ -228,8 +228,8 @@ export default function oxyApp(opts: OxyAppPluginOptions = {}): Plugin {
       // Proxy table: the Oxy data plane (`/api`) plus this app's server-side
       // function calls (`/fn`). The `/fn` key is scoped to THIS app's base so it
       // never shadows the bundle's own assets served locally under
-      // `/customer-apps/<org>/<slug>/`. Point the target at `oxy proxy` (default
-      // localhost:3000) to hit a cloud env's data with your `oxy login` token.
+      // `/customer-apps/<org>/<slug>/`. Point the target at `oxyc proxy` (default
+      // localhost:3000) to hit a cloud env's data with your `oxyc login` token.
       const proxy: Record<string, ProxyOptions> = { "/api": apiProxy };
       if (orgSlug && appSlug) {
         proxy[`/customer-apps/${orgSlug}/${appSlug}/fn`] = apiProxy;
@@ -383,11 +383,11 @@ export function validateManifest(m: OxyManifest): string[] {
     errors.push(
       `slug "${m.slug}" is malformed; must be 1–${SLUG_MAX_LEN} lowercase letters, ` +
         `digits and single hyphens (no leading/trailing/double hyphen, no underscore). ` +
-        `It becomes the app's OLTP schema name and served path, which oxy publish rejects otherwise.`
+        `It becomes the app's OLTP schema name and served path, which oxyc publish rejects otherwise.`
     );
   }
   // Function keys become `functions/<name>.js`, so a name like `../../x` is a
-  // path traversal — reject at build, the same shape `oxy publish` enforces.
+  // path traversal — reject at build, the same shape `oxyc publish` enforces.
   if (m.functions !== undefined) {
     // `typeof [] === "object"`, so an array would otherwise slip through with no
     // keys to check — reject it explicitly (a manifest `functions` is a map).

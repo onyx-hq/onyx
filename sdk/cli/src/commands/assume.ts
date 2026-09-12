@@ -1,11 +1,10 @@
 /**
  * `oxyc assume start | status | end` — acting as an organization.
  *
- * A thin client over `/api/assume`, ported from the Rust `oxy assume` so a
- * developer with only `oxyc` can do the staff loop without the other binary.
- * The sessions are Postgres rows and the Rust CLI is not privileged, so both
- * tools see the same live sessions — logging in with either and acting with
- * either is one state, not two.
+ * A thin client over `/api/assume`. It replaced the Rust `oxy assume`, which
+ * was deleted once this covered it. The sessions are Postgres rows hanging off
+ * the account, so the browser and this terminal act as one — there is no
+ * per-client state to keep in sync.
  *
  * WHY THE EXIT IS NOT BEHIND `/admin`: `/api/assume` is mounted outside it
  * deliberately, because acting as an org CLOSES the admin surface. An `end`
@@ -30,7 +29,7 @@ interface SessionDto {
   /**
    * Carried because the server sends it and a reader of this type should know
    * why it exists: a partner's surface is the partner console, not the org
-   * home. Neither this CLI nor the Rust branches on it today — the line below
+   * home. Nothing here branches on it today — the line below
    * prints the org home either way — so the distinction is documented here
    * rather than asserted next to code that does not make it.
    */
@@ -127,7 +126,7 @@ function idForSlug(list: unknown[], slug: string): string | undefined {
 }
 
 /**
- * THREE ENDPOINTS, IN ORDER OF REACH, matching the Rust.
+ * THREE ENDPOINTS, IN ORDER OF REACH.
  *
  * `/api/orgs` is what a member sees, `/admin/orgs-meta` what staff see, and
  * the partner client list what a partner sees. Trying them in that order means
@@ -208,8 +207,8 @@ function minutesLeft(s: SessionDto): string {
  */
 function printSessionRules(target: string): void {
   log.info("60 minutes, not renewable — re-running returns the same session.");
-  // The one people are most surprised by, and the reason `assume.rs` lists
-  // three properties rather than two: the session hangs off your ACCOUNT.
+  // The one people are most surprised by, and the reason this lists three
+  // properties rather than two: the session hangs off your ACCOUNT.
   log.info("it is your account that acts, not this terminal — your browser is in there too.");
   log.info(`acting closes /admin; end it with \`oxyc assume end\` against ${target}.`);
 }
@@ -251,7 +250,7 @@ export async function runAssumeStart(
 
 /**
  * Map the server's status onto the reason it refused, so an operator is not
- * left guessing at a bare 403 — the same mapping the Rust makes.
+ * left guessing at a bare 403.
  */
 function assumeError(status: number, orgId: string): CliError {
   const detail =
@@ -317,9 +316,8 @@ export async function runAssumeEnd(
   // `$ORG` unset is the ordinary way this happens, and reading it as "no org
   // named" sent an unscoped DELETE — every live session, across every org, on
   // a verb that cannot be undone. It also swallowed the `--env` hint, so a URL
-  // naming one org ended all of them. The Rust refuses: `end` matches
-  // `Some(_)` whatever it contains, and `resolve_org`'s
-  // `.filter(|s| !s.is_empty())` answers "no organization given".
+  // naming one org ended all of them. So it refuses: a present-but-blank
+  // `--org` answers "no organization given".
   //
   // Checked HERE rather than in `orgOrHint`, because "" is harmless for
   // `start` — `resolveOrgId` already refuses it — and the consequence only

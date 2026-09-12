@@ -126,7 +126,7 @@ export const CustomAppsService = {
 
   /**
    * Versioned build history for the new publish pipeline, newest first.
-   * Empty for legacy s3/local/v0 rows never published via `oxy publish`.
+   * Empty for legacy s3/local/v0 rows never published via `oxyc publish`.
    */
   async listBuilds(id: string): Promise<AppBuildHistory> {
     const response = await apiClient.get(`/customer-apps/${id}/builds`);

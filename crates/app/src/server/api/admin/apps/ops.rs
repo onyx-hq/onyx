@@ -273,9 +273,10 @@ pub(super) async fn emails_by_user_id(
 /// the bundle in front of users. Apps with no build at all are absent from the
 /// set: nothing is deployed, so there is nothing orphaned yet.
 ///
-/// Traceability itself is [`custom_app_provenance::classify`] — the same call
-/// `oxy publish` makes, so the warning an engineer sees at publish time and
-/// the flag an operator sees in the list can't disagree about what counts.
+/// Traceability itself is [`custom_app_provenance::classify`] — the rule
+/// `oxyc publish` mirrors (`provenanceGaps`), so the warning an engineer sees
+/// at publish time and the flag an operator sees in the list agree about what
+/// counts.
 ///
 /// One `IN` query for the whole page, like every other batched extra here,
 /// and `select_only` because `app_builds` carries the `manifest_json` blob
@@ -723,7 +724,7 @@ pub(super) fn validate_batch(ids: &[Uuid]) -> Result<(), ApiErr> {
 /// if either lookup misses; `Err` only on a real DB failure.
 /// Resolve `<org>/<app>` → (org row, app row). The `org` segment can be
 /// either a slug or a UUID — auto-detected on parse, mirroring the
-/// publish-side `OrgRef::from_str_auto`. Lets `oxy publish --org <uuid>`
+/// publish-side `OrgRef::from_str_auto`. Lets `oxyc publish --org <uuid>`
 /// reach `build-config` without falling over on the slug-only lookup
 /// the route used to do; the customer-facing `/customer-apps/<org>/<app>/`
 /// URLs are unaffected because they only ever carry slugs (UUIDs in

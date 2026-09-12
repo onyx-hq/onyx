@@ -2,11 +2,11 @@
  * Turning `--env` / `--target` into a base URL, and mining the org slug a
  * pasted URL carries.
  *
- * A port of `crates/app/src/cli/commands/env_url.rs` and the target half of
- * `app_manifest.rs`. Kept faithful rather than improved: `oxy` and `oxyc` share
- * a credentials file keyed by HOST, so the two must agree about which host an
- * `--env` names or they will cache tokens under different keys and each report
- * the other's login as missing.
+ * A port of the Rust `env_url.rs` and the target half of `app_manifest.rs`,
+ * both since deleted. Kept faithful rather than improved: the credentials file
+ * is keyed by HOST and still holds every login the Rust `oxy login` cached, so
+ * a change to which host an `--env` names would look those tokens up under a
+ * different key and report the login as missing.
  *
  * The one thing worth restating, because it is not obvious from the signature:
  * both org host schemes canonicalise back to the *deployment's* product host.
@@ -17,6 +17,8 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+
+import { CliError, ExitCode } from "../util/errors.js";
 
 /** A resolved `--env`: where to send the request, and whose org it named. */
 export interface ResolvedEnv {
@@ -174,13 +176,95 @@ export interface OxyAppManifest {
   environments?: Record<string, { target?: string }>;
 }
 
-/** Load `<dir>/oxy-app.json`, or `undefined` if absent or unparsable. */
-export function loadManifest(dir: string): OxyAppManifest | undefined {
+/**
+ * Read `<dir>/oxy-app.json`. `undefined` only when there is no such file.
+ *
+ * A file that exists but cannot be read, is not JSON, or carries a field this
+ * CLI reads in the wrong shape is an error naming the path — never `undefined`.
+ * Treating it as absent made every caller carry on with the wrong target,
+ * identity and function set: `publish` shipped with no functions bundled.
+ * Unknown fields still pass, so an SDK field added tomorrow breaks nothing.
+ */
+export function readAppManifest(dir: string): Record<string, unknown> | undefined {
+  const path = join(dir, "oxy-app.json");
+  let raw: string;
   try {
-    return JSON.parse(readFileSync(join(dir, "oxy-app.json"), "utf8")) as OxyAppManifest;
-  } catch {
-    return undefined;
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw invalidManifest(path, `cannot read it: ${(err as Error).message}`);
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw invalidManifest(path, (err as Error).message);
+  }
+  const problem = shapeProblem(parsed);
+  if (problem) throw invalidManifest(path, problem);
+  return parsed as Record<string, unknown>;
+}
+
+function invalidManifest(path: string, detail: string): CliError {
+  return new CliError(`${path} is not a valid oxy-app.json: ${detail}`, {
+    code: ExitCode.USAGE,
+    remedy: "fix the file and re-run"
+  });
+}
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Checks only the fields this CLI reads, as the types it reads them as. `null` is absent. */
+function shapeProblem(manifest: unknown): string | undefined {
+  if (!isObject(manifest)) return "the top level must be an object";
+  const notString = (obj: Record<string, unknown>, key: string) =>
+    obj[key] != null && typeof obj[key] !== "string";
+  const notObject = (obj: Record<string, unknown>, key: string) =>
+    obj[key] != null && !isObject(obj[key]);
+
+  for (const key of ["slug", "orgSlug", "name"]) {
+    if (notString(manifest, key)) return `\`${key}\` must be a string`;
+  }
+  for (const key of ["environments", "functions", "build"]) {
+    if (notObject(manifest, key)) return `\`${key}\` must be an object`;
+  }
+  const build = (manifest.build ?? {}) as Record<string, unknown>;
+  for (const key of ["install", "command", "outDir"]) {
+    if (notString(build, key)) return `\`build.${key}\` must be a string`;
+  }
+  for (const [section, field] of [
+    ["environments", "target"],
+    ["functions", "entry"]
+  ] as const) {
+    const entries = (manifest[section] ?? {}) as Record<string, unknown>;
+    for (const [name, entry] of Object.entries(entries)) {
+      if (!isObject(entry)) return `\`${section}.${name}\` must be an object`;
+      if (notString(entry, field)) return `\`${section}.${name}.${field}\` must be a string`;
+    }
+  }
+  return undefined;
+}
+
+/** `<dir>/oxy-app.json` for identity and target, strictly — see `readAppManifest`. */
+export function loadManifest(dir: string): OxyAppManifest | undefined {
+  return readAppManifest(dir) as OxyAppManifest | undefined;
+}
+
+/**
+ * The manifest for a command that reads it only to resolve the target.
+ *
+ * A non-blank `--target` wins outright in `resolveEnv`, so the file cannot
+ * change the outcome: it is not read, and a broken `oxy-app.json` does not fail
+ * a command that was told where to go. Otherwise `loadManifest`, strict as
+ * ever. `publish` and `init-ci` read it for identity and functions whatever
+ * `--target` says, so they do not come through here.
+ */
+export function loadForTargetResolution(
+  dir: string,
+  targetFlag: string | undefined
+): OxyAppManifest | undefined {
+  return targetFlag?.trim() ? undefined : loadManifest(dir);
 }
 
 /**

@@ -3,7 +3,7 @@
 //!
 //! `apps.project_id` is what `window.__OXY_APP__.projectId` is injected from, and
 //! the bundle's connectors, secrets and data plane resolve against it. Both the
-//! admin create (`POST /api/customer-apps`, `oxy apps create`) and the admin PATCH
+//! admin create (`POST /api/customer-apps`) and the admin PATCH
 //! used to write it straight from the body, so one mistyped id put this org's app
 //! on another tenant's data. A publish refuses to move an app, so this PATCH is the
 //! supported way to move one — which is why it has to hold the line.
@@ -16,7 +16,7 @@ use axum::Json;
 use axum::extract::Path;
 use axum::http::StatusCode;
 use entity::{apps, organizations, users, workspaces};
-use oxy_app::server::api::admin::apps::handlers::{create_app_unscoped, update_app};
+use oxy_app::server::api::admin::apps::handlers::{create_app, update_app};
 use oxy_auth::extractor::AuthenticatedUserExtractor;
 use oxy_auth::types::AuthenticatedUser;
 use sea_orm::{ActiveModelTrait, ActiveValue, DatabaseConnection, EntityTrait};
@@ -121,28 +121,36 @@ async fn patch(
     f: &Fixture,
     body: serde_json::Value,
 ) -> Result<(Uuid, String), (StatusCode, String)> {
-    let actor = AuthenticatedUserExtractor(AuthenticatedUser {
-        id: f.owner.id,
-        email: f.owner.email.clone(),
-        name: f.owner.name.clone(),
-        picture: None,
-        status: users::UserStatus::Active,
-    });
     let req = serde_json::from_value(body).expect("a valid UpdateAppRequest body");
-    update_app(actor, Path(f.app_id), Json(req))
+    update_app(actor(f), Path(f.app_id), Json(req))
         .await
         .map(|Json(resp)| (resp.project_id, resp.name))
         .map_err(|(status, Json(err))| (status, err.message))
 }
 
+/// The seeded Global Owner as the request principal.
+fn actor(f: &Fixture) -> AuthenticatedUserExtractor {
+    AuthenticatedUserExtractor(AuthenticatedUser {
+        id: f.owner.id,
+        email: f.owner.email.clone(),
+        name: f.owner.name.clone(),
+        picture: None,
+        status: users::UserStatus::Active,
+    })
+}
+
 /// Creates an app named "Created App" in `org_id` pointing at `project_id`, and
 /// returns the new row's `id` and `project_id`, or the refusal's status and message.
 ///
-/// Calls `create_app_unscoped`, not `create_app`: it is where both entry points
-/// meet — the HTTP handler delegates to it after its scope check, and
-/// `oxy apps create` calls it with no principal — so a refusal proven here holds
-/// for both. `scaffold_pr: false` keeps GitHub out of it.
-async fn create(org_id: Uuid, project_id: Uuid) -> Result<(Uuid, Uuid), (StatusCode, String)> {
+/// Drives the `create_app` handler as the Global Owner, whose scope reaches every
+/// org, so the only refusal left to prove is the workspace-in-org rule. The
+/// unscoped registration it delegates to is private: the handler is the one way
+/// in. `scaffold_pr: false` keeps GitHub out of it.
+async fn create(
+    f: &Fixture,
+    org_id: Uuid,
+    project_id: Uuid,
+) -> Result<(Uuid, Uuid), (StatusCode, String)> {
     let req = serde_json::from_value(json!({
         "name": "Created App",
         "org_id": org_id,
@@ -150,7 +158,7 @@ async fn create(org_id: Uuid, project_id: Uuid) -> Result<(Uuid, Uuid), (StatusC
         "scaffold_pr": false,
     }))
     .expect("a valid CreateAppRequest body");
-    create_app_unscoped(Json(req))
+    create_app(actor(f), Json(req))
         .await
         .map(|Json(resp)| (resp.id, resp.project_id))
         .map_err(|(status, Json(err))| (status, err.message))
@@ -181,7 +189,7 @@ async fn creating_with_a_workspace_in_the_same_org_succeeds() {
     let db = test_db().await;
     let f = seed(&db).await;
 
-    let (app_id, project_id) = create(f.org_a, f.workspace_a2)
+    let (app_id, project_id) = create(&f, f.org_a, f.workspace_a2)
         .await
         .expect("a workspace of the app's own org is a valid target");
 
@@ -196,7 +204,7 @@ async fn creating_with_another_orgs_workspace_is_refused_and_writes_no_row() {
     let f = seed(&db).await;
     let before = all_app_ids(&db).await;
 
-    let (status, message) = create(f.org_a, f.workspace_b)
+    let (status, message) = create(&f, f.org_a, f.workspace_b)
         .await
         .expect_err("a workspace of another org must be refused");
 
@@ -210,7 +218,7 @@ async fn creating_with_a_nonexistent_workspace_is_refused_and_writes_no_row() {
     let f = seed(&db).await;
     let before = all_app_ids(&db).await;
 
-    let (status, message) = create(f.org_a, Uuid::new_v4())
+    let (status, message) = create(&f, f.org_a, Uuid::new_v4())
         .await
         .expect_err("a workspace that does not exist must be refused");
 

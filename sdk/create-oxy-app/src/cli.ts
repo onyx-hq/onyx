@@ -193,8 +193,9 @@ Done. Next steps:
   pnpm install
   pnpm dev          # Vite dev server at http://localhost:5173
 
-Ship it with \`oxy publish\`, or register it via the admin UI
-(Custom apps → Add new) — the Link flow picks up oxy-app.json automatically.
+Ship it with \`oxyc publish\` (\`npm install -g @oxy-hq/cli\`), or register it
+via the admin UI (Custom apps → Add new) — the Link flow picks up oxy-app.json
+automatically.
 `);
 }
 

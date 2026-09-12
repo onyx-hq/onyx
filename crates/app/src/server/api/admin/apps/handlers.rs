@@ -208,7 +208,7 @@ pub async fn get_build_config(
 }
 
 /// Public endpoint — resolve the org slug for a workspace (project) id. Lets
-/// `oxy publish --project <uuid>` build from source without a hardcoded
+/// `oxyc publish --project <uuid>` build from source without a hardcoded
 /// `orgSlug`: a workspace belongs to exactly one org, so the org — and thus the
 /// `/customer-apps/<org>/<app>/` base path — is inferred from the pinned
 /// project. Public for the same reason as `get_build_config`: a project UUID and
@@ -257,9 +257,10 @@ pub async fn create_app(
     create_app_unscoped(Json(req)).await
 }
 
-/// Registration with no scope check — the CLI path (`oxy apps create`). See
-/// [`list_apps_scoped`] for why the CLI does not go through the extractor.
-pub async fn create_app_unscoped(
+/// Registration, once [`create_app`] has checked scope. Private so the handler
+/// is the only way in — it was `pub` for the removed `oxy apps create`, which made
+/// it a second, unchecked door.
+async fn create_app_unscoped(
     Json(req): Json<CreateAppRequest>,
 ) -> Result<Json<AppResponse>, ApiErr> {
     let db = establish_connection().await.map_err(|e| {
@@ -379,9 +380,7 @@ pub async fn create_app_unscoped(
         bootstrap_pr_url: ActiveValue::NotSet,
         last_synced_at: ActiveValue::NotSet,
         // No per-deployment override on create — defaults to "use the
-        // bundle's bundled oxy-app.json." CI sets the override later
-        // via `oxy apps ensure --manifest-override` when one bundle
-        // template needs to back multiple customers.
+        // bundle's bundled oxy-app.json."
         manifest_override: ActiveValue::NotSet,
         published_at: initial_published_at,
         repo_path: ActiveValue::Set(repo_path),
@@ -509,12 +508,12 @@ pub async fn list_apps(
     list_apps_scoped(q, scope).await
 }
 
-/// The registry list, with an explicit org filter.
+/// The registry list, with an explicit org filter — `None` for a grant with no scope.
 ///
-/// Split from [`list_apps`] so the CLI (`oxy apps list`) can call it: the CLI has direct
-/// database access on the box and no HTTP principal, so it is unbounded by construction.
-/// Handing it a synthetic `AuthenticatedUser` to satisfy the extractor would fabricate a
-/// principal, and fabricated principals are how authorization models start lying.
+/// Split from [`list_apps`] so the filter can be exercised without an HTTP principal:
+/// handing a test a synthetic `AuthenticatedUser` to satisfy the extractor would
+/// fabricate a principal, and fabricated principals are how authorization models start
+/// lying.
 pub async fn list_apps_scoped(
     q: ListAppsQuery,
     scope: Option<Vec<Uuid>>,
@@ -952,7 +951,7 @@ pub async fn run_function_job(
 
 /// `GET /api/customer-apps/{id}/builds` — newest-first build history for
 /// the new publish pipeline. Empty for legacy `s3`/local/v0 rows that
-/// have never been published via `oxy publish`.
+/// have never been published via `oxyc publish`.
 pub async fn list_builds(Path(id): Path<Uuid>) -> Result<Json<BuildHistoryResponse>, StatusCode> {
     let db = establish_connection().await.map_err(|e| {
         tracing::error!("list_builds DB connect failed: {e}");
@@ -1101,9 +1100,9 @@ pub async fn delete_app(
     delete_app_unscoped(id).await
 }
 
-/// Delete with no scope check — the CLI path (`oxy apps delete`). See
-/// [`list_apps_scoped`] for why the CLI does not go through the extractor.
-pub async fn delete_app_unscoped(id: Uuid) -> Result<StatusCode, ApiErr> {
+/// Deletion, once [`delete_app`] has checked scope. Private for the same reason
+/// as [`create_app_unscoped`].
+async fn delete_app_unscoped(id: Uuid) -> Result<StatusCode, ApiErr> {
     let db = establish_connection().await.map_err(internal)?;
     // Surface the AppOpError's message (not just its status) so the OLTP-store
     // refusal reaches the operator with its "deprovision first" instruction.

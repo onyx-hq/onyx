@@ -25,7 +25,7 @@ nearly everything (`oxy`, agentic-http/pipeline, integrations). Keep it thin:
 
 | Module | Owns |
 | ------ | ---- |
-| `cli/` | Command surface. `cli/commands/` has one file per command: `serve.rs`, `start.rs`, `run.rs`, `worker.rs`, `compile.rs`, `apps.rs`, `publish.rs`, `migrate*.rs`, `admin.rs`, `clean.rs`, … `mod.rs` builds the clap tree. |
+| `cli/` | Command surface. `cli/commands/` has one file per command: `serve.rs`, `start.rs`, `run.rs`, `worker.rs`, `compile.rs`, `migrate*.rs`, `admin.rs`, `clean.rs`, … `mod.rs` builds the clap tree. HTTP-client commands (`publish`, `login`, `proxy`, `assume`, `api`) are not here — they are `oxyc` (`sdk/cli`). |
 | `server/` | The Axum server (~80k LOC) — see breakdown below. |
 | `agentic_wiring/` | Adapts `oxy` state into the shape `agentic-pipeline` needs (`project_ctx.rs` is a 1.8k-line god file — a decomposition target). Has its own `CLAUDE.md`. |
 | `integrations/` | External integrations, notably the Slack bot (`integrations/slack/`). |

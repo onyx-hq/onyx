@@ -11,8 +11,8 @@
 pub mod agentic_wiring;
 pub mod airway_boot;
 pub mod cli;
-/// Shared by `cli::commands::publish` and the admin apps list — see the module
-/// doc for why it belongs to neither.
+/// The admin apps list's traceability rule — see the module doc. `oxyc publish`
+/// (`sdk/cli/src/publish/provenance.ts`) mirrors it for its warnings.
 pub mod custom_app_provenance;
 pub mod custom_app_template;
 pub mod emails;

@@ -89,7 +89,7 @@ impl BuiltInAuthenticator {
             .and_then(|v| v.to_str().ok())
         {
             // Accept both forms: the web app's axios sends the bare JWT with
-            // no scheme (`Authorization: <jwt>`), while the CLI / `oxy login`
+            // no scheme (`Authorization: <jwt>`), while the CLI / `oxyc login`
             // and every standard HTTP client send `Authorization: Bearer <jwt>`.
             // Strip an optional (case-insensitive) `Bearer ` prefix before
             // decoding so a bearer-scheme client isn't rejected with the whole

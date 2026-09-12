@@ -1,7 +1,7 @@
 //! Scope enforcement for app-publish-token-authenticated requests.
 //!
 //! App publish tokens (`oxypublish_...` bearer) are minted for **machine auth**
-//! (primarily `oxy publish` in CI). They are deliberately narrow: they may act
+//! (primarily `oxyc publish` in CI). They are deliberately narrow: they may act
 //! as an app-admin for **publishing and read-only inspection of the
 //! customer-apps surface only**. The auth middleware attaches an
 //! [`AppPublishTokenAuth`] marker whenever a request authenticated via one of

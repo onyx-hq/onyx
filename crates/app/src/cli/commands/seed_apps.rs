@@ -7,7 +7,7 @@
 //! order (and the same code) `POST /api/customer-apps/publish` uses. What it
 //! skips is only the transport: no tarball, no HTTP, no bundle validation. That
 //! matters because it means the seeded app exercises the serve path a real
-//! `oxy publish` produces, so a test against it tests the shipping code.
+//! `oxyc publish` produces, so a test against it tests the shipping code.
 //!
 //! The bundle is checked into the repo (`examples/customer_apps/oxy-starter/`)
 //! rather than generated here: it's reviewable in a diff, and `oxy seed` stays a
@@ -66,7 +66,7 @@ const APP_SLUG: &str = "oxy-starter";
 const RESTRICTED_APP_SLUG: &str = "oxy-starter-private";
 
 /// Files that document the example but aren't part of the deployed bundle.
-/// A real `oxy publish` ships a build output directory, which wouldn't
+/// A real `oxyc publish` ships a build output directory, which wouldn't
 /// contain these.
 const NOT_BUNDLE_FILES: &[&str] = &["README.md"];
 
@@ -428,7 +428,7 @@ async fn deploy(
     let app_id = app_id_for(target.org_id, &target.slug);
     ensure_app(conn, target, app_id).await?;
 
-    // Same `__oxy/` namespace reservation + asset manifest a real `oxy publish`
+    // Same `__oxy/` namespace reservation + asset manifest a real `oxyc publish`
     // writes. The seeded app is the first bundle every new workspace opens, so
     // it is the last one that should be missing its preload hints and its
     // service-worker precache list — and running the shared installer here is

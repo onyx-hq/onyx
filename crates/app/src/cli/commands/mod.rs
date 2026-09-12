@@ -1,20 +1,12 @@
 mod admin;
 mod agentic_cli;
 mod airway;
-mod app_manifest;
-mod apps;
-mod assume;
-mod assume_org;
 mod cameras;
 pub mod clean;
 mod compile;
-mod env_url;
 pub mod export_chart;
-mod http;
 mod init;
-mod init_ci;
 mod intent;
-mod login;
 mod looker;
 mod make;
 mod mcp;
@@ -24,8 +16,6 @@ mod migrate_automations;
 /// `tests/seed_example_app.rs`) instead of shelling out to the binary — the
 /// seed is a fixture the tests are built on, not just a CLI command.
 pub mod oltp;
-mod proxy;
-mod publish;
 pub mod run;
 pub mod seed;
 mod seed_apps;
@@ -322,47 +312,6 @@ enum SubCommand {
     /// Hosts deployment-wide actions for the camera fleet (currently:
     /// device log retention sweep). Reserved for ops / cron flows.
     Cameras(cameras::CamerasArgs),
-    /// Manage custom-app registrations (create, list, delete).
-    ///
-    /// Wraps the admin app-registry handlers directly — no HTTP server
-    /// required. Intended for ops and CI scripts.
-    Apps(apps::AppsArgs),
-    /// Publish a built custom-app bundle to oxy (one-way deploy).
-    ///
-    /// Tars `./dist` (or `--dir`) and POSTs it to
-    /// `<target>/api/customer-apps/publish`. Identity comes from flags,
-    /// then `OXY_*` env vars (`.env.local` is auto-loaded), then the
-    /// `apps/<org>/<app>/` path. Replaces `apps ensure` + `aws s3 sync`
-    /// + the `/sync` callback. Intended for CI and local testing.
-    Publish(publish::PublishArgs),
-    /// Generate a safe GitHub Actions workflow for trusted publishing (design §8).
-    ///
-    /// Writes .github/workflows/oxy-publish.yml with an isolated publish job
-    /// (id-token confined to a single environment-gated job) and prints the
-    /// publisher registration to complete. Reads nothing from the repo.
-    #[command(name = "init-ci")]
-    InitCi(init_ci::InitCiArgs),
-    /// Authenticate the CLI against an oxy instance for `oxy publish`.
-    ///
-    /// Opens a browser to log in (loopback flow), caches the token per
-    /// target host, and reports whether you're an app-admin (i.e. whether
-    /// you can publish). Works against local `oxy serve` and the cloud.
-    Login(login::LoginArgs),
-    /// Clear the cached `oxy login` token for a target.
-    Logout(login::LogoutArgs),
-    /// Act as an organization (assume-role) from the terminal.
-    ///
-    /// Start / show / end the same explicit, audited session the admin UI
-    /// uses (`/api/assume`). Oxy staff may act as any org; a partner only as
-    /// an assigned client. Bounded to 60 minutes and NOT renewable, and it
-    /// closes the `/admin/*` staff surface while live — `oxy assume end`
-    /// restores it.
-    Assume(assume::AssumeArgs),
-    /// Run a local outbound proxy so a custom app in `pnpm dev` hits a cloud
-    /// Oxy's real data. Reuses the `oxy login --env` token; defaults to port
-    /// 3000 (a drop-in for a local `oxy serve`). Guardrails: tracking events
-    /// dropped, side-effecting calls held (`--allow-events` / `--allow-writes`).
-    Proxy(proxy::ProxyArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -745,13 +694,6 @@ pub async fn cli(
             SubCommand::Admin(_) => "admin",
             SubCommand::Worker(_) => "worker",
             SubCommand::Cameras(_) => "cameras",
-            SubCommand::Apps(_) => "apps",
-            SubCommand::Publish(_) => "publish",
-            SubCommand::InitCi(_) => "init-ci",
-            SubCommand::Login(_) => "login",
-            SubCommand::Proxy(_) => "proxy",
-            SubCommand::Logout(_) => "logout",
-            SubCommand::Assume(_) => "assume",
         };
 
         sentry_config::add_breadcrumb(
@@ -1117,34 +1059,6 @@ pub async fn cli(
 
         Some(SubCommand::Cameras(cameras_args)) => {
             cameras::handle_cameras_command(cameras_args).await?;
-        }
-
-        Some(SubCommand::Apps(apps_args)) => {
-            apps::handle_apps_command(apps_args).await?;
-        }
-
-        Some(SubCommand::Publish(publish_args)) => {
-            publish::handle_publish_command(publish_args).await?;
-        }
-
-        Some(SubCommand::InitCi(args)) => {
-            init_ci::handle_init_ci_command(args).await?;
-        }
-
-        Some(SubCommand::Login(login_args)) => {
-            login::handle_login_command(login_args).await?;
-        }
-
-        Some(SubCommand::Logout(logout_args)) => {
-            login::handle_logout_command(logout_args).await?;
-        }
-
-        Some(SubCommand::Proxy(proxy_args)) => {
-            proxy::handle_proxy_command(proxy_args).await?;
-        }
-
-        Some(SubCommand::Assume(assume_args)) => {
-            assume::handle_assume_command(assume_args).await?;
         }
 
         None => {

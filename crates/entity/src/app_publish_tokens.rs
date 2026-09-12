@@ -1,6 +1,6 @@
 //! `SeaORM` Entity for App Publish Tokens.
 //!
-//! Long-lived bearer credentials for machine auth (primarily `oxy publish`
+//! Long-lived bearer credentials for machine auth (primarily `oxyc publish`
 //! in CI), minted by global app-admins. Only `token_hash` (a SHA-256 of the
 //! plaintext) is persisted — the plaintext is shown once at creation and
 //! never stored. `token_prefix` is a short, non-secret display fragment

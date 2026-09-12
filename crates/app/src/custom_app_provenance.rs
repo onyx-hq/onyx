@@ -5,7 +5,7 @@
 //! there is no source export (see `internal-docs/customer-apps.md` §12). Two
 //! places ask whether that path exists, for different audiences:
 //!
-//! - `oxy publish` warns the engineer at publish time, when it's still cheap
+//! - `oxyc publish` warns the engineer at publish time, when it's still cheap
 //!   to fix;
 //! - the admin apps list flags builds already in the field, which is where
 //!   you find the ones published before anybody was warning.
@@ -14,8 +14,11 @@
 //! unless BOTH halves were missing while the server flagged EITHER, so a
 //! `--dir` publish from CI (commit from `$GITHUB_SHA`, no `origin` to read)
 //! published silently and then sat amber in the admin list forever — the
-//! exact surprise the publish-time warning exists to prevent. Hence one
-//! module, deliberately owned by neither `cli` nor `server`.
+//! exact surprise the publish-time warning exists to prevent. Hence one rule,
+//! stated once per language: this module for the server, and — since the
+//! publish CLI is TypeScript and can't call it — `provenanceGaps` /
+//! `isRecorded` in `sdk/cli/src/publish/provenance.ts`. Change one, change
+//! both.
 //!
 //! The rule: **both halves are required**. A repo with no commit points at a
 //! moving branch, and a commit with no repo points nowhere; neither gets you
@@ -57,10 +60,11 @@ pub fn classify(source_repo: Option<&str>, commit_sha: Option<&str>) -> SourcePr
 /// Is one half recorded? A field counts only when it has non-whitespace
 /// content, so `--repo ""` and `--commit "  "` are not provenance.
 ///
-/// Public because callers sometimes need one half on its own — `oxy publish`
-/// asks "is there a commit for a dirty tree to contradict?" — and they must
-/// use the same blank handling as [`classify`] rather than reaching for
-/// `is_some()`, which is precisely how the two sides drifted before.
+/// Public because callers sometimes need one half on its own — publish asks
+/// "is there a commit for a dirty tree to contradict?" (`oxyc publish`'s
+/// `isRecorded` mirrors this) — and they must use the same blank handling as
+/// [`classify`] rather than reaching for `is_some()`, which is precisely how
+/// the two sides drifted before.
 pub fn is_recorded(value: Option<&str>) -> bool {
     value.is_some_and(|v| !v.trim().is_empty())
 }

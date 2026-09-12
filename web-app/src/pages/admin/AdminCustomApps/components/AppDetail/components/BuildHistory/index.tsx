@@ -75,7 +75,7 @@ const SourceLink = ({
  * The silence this replaces was the whole problem: a build with no provenance
  * rendered identically to one whose link simply sat further down the row, so
  * an app nobody could trace looked exactly like an app nobody had scrolled
- * to. `oxy publish` warns about this at publish time; this is where you find
+ * to. `oxyc publish` warns about this at publish time; this is where you find
  * the ones that already shipped.
  *
  * Names which half is missing — this row has both fields, so telling an
@@ -139,7 +139,7 @@ const shortId = (s: string) => (s.length > 10 ? s.slice(0, 7) : s);
  * at a glance, the full versioned build history (who published each, when),
  * and one-click "Make Live" of any retained build (a pure pointer move
  * server-side). Empty for legacy s3/local/v0 apps never published via
- * `oxy publish`.
+ * `oxyc publish`.
  */
 export const BuildHistory = ({ appId }: { appId: string }) => {
   const { data, isLoading, error } = useAppBuilds(appId);
@@ -156,7 +156,7 @@ export const BuildHistory = ({ appId }: { appId: string }) => {
   if (!builds || builds.length === 0) {
     return (
       <p className='text-muted-foreground text-xs'>
-        No deployments yet — this app hasn't been published via the pipeline (oxy publish).
+        No deployments yet — this app hasn't been published via the pipeline (oxyc publish).
       </p>
     );
   }

@@ -46,7 +46,7 @@ and every `ctx.oltp` call is rejected before any connection is opened.
 2. **Publish the app:**
 
    ```sh
-   oxy publish
+   oxyc publish
    ```
 
 The kill-switch applies: if the `oltp` feature flag is off, `ctx.oltp` resolution

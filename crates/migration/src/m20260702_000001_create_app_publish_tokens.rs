@@ -1,7 +1,7 @@
 use sea_orm_migration::prelude::*;
 
 /// App publish tokens: long-lived bearer credentials for machine auth (primarily
-/// `oxy publish` in CI), minted by global app-admins. Only a hash of the
+/// `oxyc publish` in CI), minted by global app-admins. Only a hash of the
 /// token is stored, never the plaintext. A live (non-revoked) token
 /// authenticates as its owner *only on the customer-apps admin surface* —
 /// scope enforcement lives in the request path, not this schema.

@@ -1,5 +1,5 @@
 /**
- * Target resolution — a port of `crates/app/src/cli/commands/env_url.rs`.
+ * Target resolution — a port of the Rust `env_url.rs` (since deleted).
  *
  * Every case below is transcribed from that module's own tests, and that is
  * the point: `oxy` and `oxyc` share a credentials file **keyed by host**, so if
@@ -8,8 +8,19 @@
  * at compile time notices; only this does.
  */
 
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { defaultTarget, loadManifest, looksLikeUrl, parseEnvUrl, resolveEnv } from "./target.js";
+import {
+  defaultTarget,
+  loadForTargetResolution,
+  loadManifest,
+  looksLikeUrl,
+  type OxyAppManifest,
+  parseEnvUrl,
+  resolveEnv
+} from "./target.js";
 
 /** The Rust's `resolve()` helper, so the cases below read the same. */
 const resolve = (value: string) => {
@@ -193,8 +204,74 @@ describe("resolveEnv precedence", () => {
   });
 });
 
+/** A throwaway directory holding `oxy-app.json` with these exact contents. */
+function withManifest(contents: string, check: (dir: string) => void): void {
+  const dir = mkdtempSync(join(tmpdir(), "oxyc-target-"));
+  try {
+    writeFileSync(join(dir, "oxy-app.json"), contents);
+    check(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const BROKEN = ['{ "slug": "x", ', '{ "slug": 5 }', "[]", '{ "environments": { "dev": "x" } }'];
+
 describe("loadManifest", () => {
   it("returns undefined rather than throwing when there is no manifest", () => {
     expect(loadManifest("/nonexistent-directory-for-a-test")).toBeUndefined();
+  });
+
+  /**
+   * It used to answer `undefined` for these too, and every caller then acted
+   * as if there were no manifest: `publish` bundled no functions and took its
+   * identity from flags or the directory, without a word.
+   */
+  it("throws, naming the file, for one that exists but is not a valid manifest", () => {
+    for (const bad of BROKEN) {
+      withManifest(bad, (dir) => {
+        expect(() => loadManifest(dir), bad).toThrow(join(dir, "oxy-app.json"));
+      });
+    }
+  });
+
+  it("lets unknown fields and nulls through", () => {
+    withManifest('{ "slug": "x", "orgSlug": null, "someFutureKey": [1] }', (dir) => {
+      expect(loadManifest(dir)?.slug).toBe("x");
+    });
+  });
+});
+
+describe("an environments entry without a target", () => {
+  /** Newer manifests put other per-environment keys under `environments`. */
+  it("resolves as if the entry were absent", () => {
+    const manifest: OxyAppManifest = {
+      environments: {
+        dev: {},
+        production: { target: "   " },
+        "https://poke-house.oxygen-hq.com": {}
+      }
+    };
+    for (const env of ["dev", "production"]) {
+      expect(resolveEnv(env, undefined, manifest)?.target, env).toBe(defaultTarget(env));
+    }
+    expect(resolveEnv("https://poke-house.oxygen-hq.com", undefined, manifest)).toEqual({
+      target: "https://app.oxygen-hq.com",
+      orgSlug: "poke-house"
+    });
+  });
+});
+
+describe("loadForTargetResolution", () => {
+  it("skips a broken manifest when --target decides, and is strict when it does not", () => {
+    withManifest('{ "slug": "x", ', (dir) => {
+      expect(loadForTargetResolution(dir, "https://flag.example.com")).toBeUndefined();
+      for (const flag of [undefined, "", "   "]) {
+        expect(() => loadForTargetResolution(dir, flag), String(flag)).toThrow("oxy-app.json");
+      }
+    });
+    withManifest('{ "slug": "x" }', (dir) => {
+      expect(loadForTargetResolution(dir, undefined)?.slug).toBe("x");
+    });
   });
 });

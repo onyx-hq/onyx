@@ -1,19 +1,19 @@
 /**
- * The token cache — the SAME file the Rust `oxy` binary reads and writes.
+ * The token cache — the SAME file the deleted Rust `oxy login` wrote.
  *
- * Interop is the whole point: `oxy login` and `oxyc login` must be
- * interchangeable, so one tool logging in authenticates the other. That makes
- * the on-disk shape a contract with a program written in another language, and
- * every constant below is transcribed from `crates/app/src/cli/commands/login.rs`
- * rather than chosen here.
+ * It began as interop with a program written in another language, and the
+ * shape is still that contract: every login cached before `oxyc` took over
+ * lives in this file, so the path, the host key and the field names were
+ * transcribed from the Rust `login.rs` rather than chosen here. Change any of
+ * them and every existing login silently disappears.
  *
- * THE PATH IS NOT `~/.config` ON macOS, whatever the Rust doc comment says.
- * `login.rs` builds it from `dirs::config_dir()`, and that crate returns
+ * THE PATH IS NOT `~/.config` ON macOS, whatever the Rust doc comment said.
+ * `login.rs` built it from `dirs::config_dir()`, and that crate returns
  * `$HOME/Library/Application Support` on macOS — verified against a live
  * credentials file. A `~/.config/oxy` implementation would read an empty store
- * on every Mac in the company and report every developer as logged out while
- * the Rust binary saw them logged in. `configDir()` reproduces the crate's
- * platform rules, and `credentials.test.ts` pins them.
+ * on every Mac in the company and report every developer as logged out.
+ * `configDir()` reproduces the crate's platform rules, and
+ * `credentials.test.ts` pins them.
  */
 
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";

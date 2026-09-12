@@ -148,7 +148,7 @@ pub(super) fn build_public_routes(app_state: &AppState) -> RoleRouter {
             "/apps/{org_slug}/{app_slug}/build-config",
             get(get_build_config),
         )
-        // Public: resolve a workspace's org slug so `oxy publish --project <id>`
+        // Public: resolve a workspace's org slug so `oxyc publish --project <id>`
         // can bake the /customer-apps/<org>/<app>/ base path without a hardcoded
         // orgSlug (same rationale as build-config — ids/slugs aren't secrets).
         .route_fleet("/org-for-project/{project_id}", get(get_org_for_project))

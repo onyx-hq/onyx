@@ -2,7 +2,7 @@ import type { CreatedPublishToken, PublishToken } from "@/types/publishTokens";
 import { apiClient } from "./axios";
 
 /**
- * App publish tokens (machine-auth bearer for `oxy publish`). Managed by
+ * App publish tokens (machine-auth bearer for `oxyc publish`). Managed by
  * any Global Admin; mounted at `/api/admin/app-publish-tokens`. Tokens
  * cannot manage tokens — this surface is session-credentialed only.
  */

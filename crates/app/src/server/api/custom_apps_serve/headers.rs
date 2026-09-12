@@ -18,7 +18,7 @@ use uuid::Uuid;
 /// 404 is heuristically cacheable (RFC 9111 §15.1) and CDNs apply a default
 /// negative TTL — CloudFront's is 10s. Nearly every negative answer on this
 /// route is *state that flips*: "no build for this channel" becomes a 200 at
-/// the first `oxy publish`, an unknown org or app slug becomes real when it
+/// the first `oxyc publish`, an unknown org or app slug becomes real when it
 /// is created, and a missing hashed asset comes back when a rollback
 /// re-ships that chunk. Caching any of those holds the stale answer across
 /// the transition, and none of them is worth caching to begin with.

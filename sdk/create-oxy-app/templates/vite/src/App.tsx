@@ -117,7 +117,7 @@ export function App() {
           <Note>
             Replace <code>STARTER_SQL</code> with a query against your warehouse, point{" "}
             <code>TOPIC</code> at one of your semantic topics, then ship it with{" "}
-            <code>oxy publish</code>. Re-skin everything by editing the tokens in{" "}
+            <code>oxyc publish</code>. Re-skin everything by editing the tokens in{" "}
             <code>src/index.css</code>.
           </Note>
         </Panel>

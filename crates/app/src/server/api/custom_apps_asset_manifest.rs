@@ -326,7 +326,7 @@ pub fn build_from_files(
 /// 2. **Write the manifest**, generated from the file list as it stands *after*
 ///    the strip — so it never advertises a path that was just removed.
 ///
-/// Shared by `oxy publish` and `oxy seed` deliberately: the seeded example app
+/// Shared by `oxyc publish` and `oxy seed` deliberately: the seeded example app
 /// is the bundle every new workspace opens first, and a seed that skipped this
 /// would ship the one app we control on the slow path.
 ///
@@ -624,7 +624,7 @@ mod tests {
         );
     }
 
-    /// The shape that ships from `oxy publish` for a path-mounted app: Vite
+    /// The shape that ships from `oxyc publish` for a path-mounted app: Vite
     /// built with `base: /customer-apps/<org>/<slug>/`, so every reference is
     /// root-absolute AND already carries the mount prefix.
     ///
@@ -986,7 +986,7 @@ mod tests {
         assert!(json.contains("\"serviceWorker\":true"), "{json}");
     }
 
-    /// The one entry point both `oxy publish` and `oxy seed` use, so the seeded
+    /// The one entry point both `oxyc publish` and `oxy seed` use, so the seeded
     /// example app is on the same fast path as a real publish.
     #[test]
     fn install_into_reserves_the_namespace_and_writes_the_manifest() {

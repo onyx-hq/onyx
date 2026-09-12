@@ -18,7 +18,7 @@ pnpm email:dev    # render emails/Welcome.tsx in a browser (no server needed)
 | --- | --- |
 | `oxy-app.json` | The app's identity, launcher-card metadata, and the `functions` block that declares each handler and its capabilities. |
 | `src/App.tsx` | Your UI, and the three surfaces (`useQuery`, `useSemanticQuery`, `useFunction`). |
-| `functions/notify.ts` | A server-side handler. Bundled and shipped by `oxy publish`; runs on Oxy's isolate. |
+| `functions/notify.ts` | A server-side handler. Bundled and shipped by `oxyc publish`; runs on Oxy's isolate. |
 | `emails/Welcome.tsx` | A **preact** email template rendered to HTML by `@oxy-hq/sdk/email`. |
 | `src/index.css` | Design tokens. Change the hex values to re-skin the app. |
 | `src/chrome/` | Presentational primitives — `Panel`, `KpiTile`, `Pill`, `Button`, `Topbar`. |
@@ -108,10 +108,11 @@ bundle root — never hardcode the base path. Replace `public/icon.svg` and
 ## Deploying
 
 ```bash
-oxy login   --env production    # once per env; caches a token
-oxy publish --env production    # build + ship to the draft channel
-oxy publish --env production --promote   # …straight to live
+npm install -g @oxy-hq/cli       # once; installs oxyc
+oxyc login   --env production    # once per env; caches a token
+oxyc publish --env production    # build + ship to the draft channel
+oxyc publish --env production --promote   # …straight to live
 ```
 
-`oxy publish` bundles the frontend **and** `functions/*`, resolves the target
+`oxyc publish` bundles the frontend **and** `functions/*`, resolves the target
 org + project, and uploads it. No CI required and no project id in git.

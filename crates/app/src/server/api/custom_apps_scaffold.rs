@@ -223,9 +223,6 @@ async fn resolve_installation_id(
 
 /// Render the bundle skeleton that lands in `apps/<org>/<app>/` of the
 /// customer-apps repo using the template identified by `template_id`.
-/// Uses the SAME renderer the `oxy apps init` CLI emits — sharing the
-/// renderer guarantees scaffolded PRs and CLI-bootstrapped local dirs
-/// produce identical layouts (no template drift between paths).
 ///
 /// `template_id` must already be validated against the registry by the
 /// caller; passing an unknown id panics at the `expect` so failures

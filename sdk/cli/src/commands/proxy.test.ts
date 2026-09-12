@@ -2,10 +2,10 @@
  * The proxy's guardrails.
  *
  * These are the whole reason the command exists: everything else is a
- * forwarder. Each predicate is a decision carried over verbatim from
- * `crates/app/src/cli/commands/proxy.rs`, and getting one wrong means a laptop
- * writing to a customer's production data — a failure nobody notices until it
- * has already happened.
+ * forwarder. Each predicate is a decision carried over verbatim from the Rust
+ * `oxy proxy` this replaced, and getting one wrong means a laptop writing to a
+ * customer's production data — a failure nobody notices until it has already
+ * happened.
  */
 
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
@@ -21,11 +21,14 @@ const BIN = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "dist",
 
 import {
   buildRequestHeaders,
+  ensureTraceparent,
+  functionRoute,
   isAuthPath,
   isEventsPath,
   isProductionTarget,
   isWritePath,
-  rewriteSetCookie
+  rewriteSetCookie,
+  traceIdOf
 } from "./proxy.js";
 
 /**
@@ -155,6 +158,65 @@ describe("buildRequestHeaders — the token is a fallback, never an override", (
   });
 });
 
+describe("functionRoute — only an Oxy Function call is annotated", () => {
+  it("names the function of a /customer-apps/<org>/<slug>/fn/<name> call", () => {
+    expect(functionRoute("/customer-apps/acme/sales/fn/refresh")).toBe("refresh");
+    expect(functionRoute("/customer-apps/o/s/fn/sync/extra")).toBe("sync");
+    expect(functionRoute("/customer-apps/o/s/fn/refresh?debug=1")).toBe("refresh");
+  });
+
+  /** A bundle asset that merely contains `/fn/` is not a call. */
+  it("leaves assets and other routes alone", () => {
+    expect(functionRoute("/customer-apps/acme/sales/assets/app.js")).toBeUndefined();
+    expect(functionRoute("/customer-apps/acme/sales/assets/fn/x.js")).toBeUndefined();
+    expect(functionRoute("/customer-apps/acme/sales/fn")).toBeUndefined();
+    expect(functionRoute("/api/fn/not-an-app")).toBeUndefined();
+  });
+});
+
+describe("traceparent — one trace per function call", () => {
+  /**
+   * The SDK's header must survive the outbound allowlist, or the id the page
+   * stamped on its error names a trace that exists nowhere.
+   */
+  it("forwards the SDK's traceparent and tracestate untouched", () => {
+    const traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+    const headers = buildRequestHeaders(
+      { traceparent, tracestate: "oxy=1" },
+      undefined,
+      "/customer-apps/o/s/fn/refresh"
+    );
+    expect(ensureTraceparent(headers)).toBe("0af7651916cd43dd8448eb211c80319c");
+    expect(headers.traceparent).toBe(traceparent);
+    expect(headers.tracestate).toBe("oxy=1");
+  });
+
+  it("mints a sampled one when the call arrived without", () => {
+    const headers: Record<string, string> = {};
+    const minted = ensureTraceparent(headers);
+    expect(minted).toMatch(/^[0-9a-f]{32}$/);
+    expect(traceIdOf(headers.traceparent ?? "")).toBe(minted);
+    expect(headers.traceparent).toMatch(/-01$/);
+  });
+
+  /** A rejected header takes its `tracestate` with it (W3C). */
+  it("replaces a malformed one rather than forwarding it, and drops its tracestate", () => {
+    for (const bad of [
+      "garbage",
+      "00-00000000000000000000000000000000-b7ad6b7169203331-01",
+      "00-0af7651916cd43dd8448eb211c80319c-0000000000000000-01",
+      "zz-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+      "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331"
+    ]) {
+      const headers: Record<string, string> = { traceparent: bad, tracestate: "vendor=stale" };
+      const minted = ensureTraceparent(headers);
+      expect(bad.includes(minted), bad).toBe(false);
+      expect(traceIdOf(headers.traceparent ?? ""), bad).toBe(minted);
+      expect(headers.tracestate, bad).toBeUndefined();
+    }
+  });
+});
+
 describe("rewriteSetCookie — storable on localhost", () => {
   it("strips Domain and Secure, which stop a browser storing it on http://localhost", () => {
     const out = rewriteSetCookie("session=abc; Domain=.oxygen-hq.com; Secure; HttpOnly; Path=/");
@@ -180,10 +242,36 @@ describe("the forwarder, end to end", () => {
   let base: string;
   let proxy: ChildProcess;
   let proxyUrl: string;
+  let proxyStderr = "";
+  let streamClosed = false;
 
   beforeAll(async () => {
     upstream = createServer((req, res) => {
       const path = (req.url ?? "/").split("?")[0];
+      if (path === "/customer-apps/o/s/fn/refresh") {
+        res.writeHead(200, { "content-type": "application/json", "x-oxy-request-id": "req-123" });
+        res.end(JSON.stringify({ traceparent: req.headers.traceparent ?? null }));
+        return;
+      }
+      if (path === "/api/broken-stream") {
+        // Headers and a first chunk, then the connection dies — the status is
+        // already on the wire when the forwarder finds out.
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.write("partial");
+        setTimeout(() => res.socket?.destroy(), 20);
+        return;
+      }
+      if (path === "/api/stream") {
+        // An SSE stream that never ends on its own. `close` fires only if the
+        // connection goes away, which is the thing under test.
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        const tick = setInterval(() => res.write("data: tick\n\n"), 25);
+        res.on("close", () => {
+          clearInterval(tick);
+          streamClosed = true;
+        });
+        return;
+      }
       if (path === "/api/gzipped") {
         // Compressed on the wire. undici asks for this and decodes it, so the
         // forwarder must not pass `content-encoding` on to the browser.
@@ -218,7 +306,6 @@ describe("the forwarder, end to end", () => {
       env: { ...process.env, OXY_TOKEN: "dev-token", NO_COLOR: "1" },
       stdio: ["ignore", "ignore", "pipe"]
     });
-    let proxyStderr = "";
     proxy.stderr?.on("data", (d) => {
       proxyStderr += d;
     });
@@ -299,9 +386,50 @@ describe("the forwarder, end to end", () => {
     expect(cookies.join(" ")).not.toMatch(/domain=/i);
     expect(cookies.join(" ")).not.toMatch(/\bsecure\b/i);
   });
+
+  /**
+   * The line a developer copies into HyperDX after watching a function fail:
+   * the trace the proxy sent upstream, and the request id the server answered
+   * with, so neither has to be dug out by hand.
+   */
+  it("gives a function call a trace and prints its ids", async () => {
+    const res = await fetch(`${proxyUrl}/customer-apps/o/s/fn/refresh`);
+    const sent = ((await res.json()) as { traceparent: string | null }).traceparent;
+    const traceId = traceIdOf(sent ?? "");
+    expect(traceId).toMatch(/^[0-9a-f]{32}$/);
+    for (let i = 0; i < 20 && !proxyStderr.includes(`trace_id=${traceId}`); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(proxyStderr).toContain(`↳ 200 fn refresh  request_id=req-123  trace_id=${traceId}`);
+  });
+
+  /**
+   * Last-but-one, and on purpose: before the fix this took the proxy process
+   * down, which would fail every case after it for a reason none of them name.
+   */
+  it("survives an upstream that dies after the status is sent", async () => {
+    await fetch(`${proxyUrl}/api/broken-stream`, { signal: AbortSignal.timeout(5_000) })
+      .then((r) => r.text())
+      .catch(() => undefined);
+    expect(proxy.exitCode, proxyStderr).toBeNull();
+    const res = await fetch(`${proxyUrl}/api/ping`, { signal: AbortSignal.timeout(5_000) });
+    expect(res.status).toBe(200);
+  });
+
+  /** An SSE stream nobody reads must not stay open against the cloud. */
+  it("closes the upstream request when the browser goes away", async () => {
+    const browser = new AbortController();
+    const res = await fetch(`${proxyUrl}/api/stream`, { signal: browser.signal });
+    await res.body?.getReader().read();
+    browser.abort();
+    for (let i = 0; i < 30 && !streamClosed; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(streamClosed).toBe(true);
+  });
 });
 
-describe("isProductionTarget — the one guardrail this port adds", () => {
+describe("isProductionTarget — refused without --yes", () => {
   it("catches the product host and every org subdomain under it", () => {
     for (const target of [
       "https://app.oxygen-hq.com",

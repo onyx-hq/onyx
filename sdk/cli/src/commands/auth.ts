@@ -21,9 +21,8 @@ import { runAssumeStart } from "./assume.js";
  *
  * MULTI-ENV IS SEQUENTIAL, not concurrent: each one opens a browser and waits
  * for its callback, and two tabs racing for the same loopback port is a login
- * that fails for a reason nobody can read. `oxy login --env dev,staging` does
- * the same, and the two tools write the same credential file — so logging into
- * three with one tool leaves the other authenticated for three.
+ * that fails for a reason nobody can read. The Rust `oxy login --env dev,staging`
+ * did the same, and its logins are still in the same credential file.
  *
  * A FAILURE DOES NOT ABANDON THE REST. Logging into dev and staging is a
  * sequence of independent acts, and stopping at the first would leave you

@@ -17,7 +17,7 @@ import { RevokeTokenDialog } from "./components/RevokeTokenDialog";
 
 /**
  * `/admin/publish-tokens` — manage **App publish tokens**: long-lived
- * bearer credentials for machine auth (primarily `oxy publish` in CI),
+ * bearer credentials for machine auth (primarily `oxyc publish` in CI),
  * a stable replacement for the ~7-day session JWT.
  *
  * Open to any Global Admin (the `app_admins` table). A live token acts as
@@ -63,7 +63,7 @@ export default function AdminPublishTokens({ embedded = false }: { embedded?: bo
         >
           Long-lived bearer tokens for machine auth — set one as the{" "}
           <span className='font-mono'>OXY_TOKEN</span> secret so{" "}
-          <span className='font-mono'>oxy publish</span> works in CI without an expiring login. A
+          <span className='font-mono'>oxyc publish</span> works in CI without an expiring login. A
           token can publish and read the custom-apps surface only; it can't delete apps, mint app
           API keys, or manage tokens.
         </p>
@@ -110,7 +110,7 @@ export default function AdminPublishTokens({ embedded = false }: { embedded?: bo
             <div className='flex flex-col items-center justify-center gap-2 py-16 text-muted-foreground'>
               <KeyRound className='size-8' />
               <p className='text-xs'>No publish tokens yet.</p>
-              <p className='text-xs'>Create one above to authenticate `oxy publish` from CI.</p>
+              <p className='text-xs'>Create one above to authenticate `oxyc publish` from CI.</p>
             </div>
           ) : (
             <ul className='divide-y divide-border'>

@@ -1,5 +1,5 @@
 //! `/api/admin/app-publish-tokens` — CRUD for app publish tokens (machine-auth bearer
-//! credentials, primarily for `oxy publish` in CI).
+//! credentials, primarily for `oxyc publish` in CI).
 //!
 //! Sits behind the `/admin` door plus `Cap::ManageApps` (publishing is what these are
 //! for). The plaintext is returned **once** on create and never stored; only a SHA-256

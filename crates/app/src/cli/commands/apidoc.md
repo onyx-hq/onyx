@@ -13,7 +13,7 @@ Two schemes are accepted on every endpoint — supply one:
 | Scheme | How to obtain | Header sent |
 |--------|--------------|-------------|
 | **API Key** | Generate in *Settings → API Keys* | `X-API-Key: <key>` |
-| **Bearer (JWT)** | Issued by `oxy login` or the magic-link flow | `Authorization: Bearer <token>` |
+| **Bearer (JWT)** | Issued by `oxyc login` or the magic-link flow | `Authorization: Bearer <token>` |
 
 Use the **Authorize** button above to enter either credential; Swagger UI
 will attach it to every "Try it out" request.
@@ -22,44 +22,47 @@ will attach it to every "Try it out" request.
 
 ## CLI Quick-start
 
-### `oxy login` — authenticate the CLI
+The terminal client is **`oxyc`** (`@oxy-hq/cli`, source in `sdk/cli`). It
+replaced the old `oxy api`, `oxy login` and `oxy logout` subcommands, which
+were removed from the `oxy` binary.
+
+```bash
+npm install -g @oxy-hq/cli
+```
+
+### `oxyc login` — authenticate the CLI
 
 ```
-oxy login [--env <env>] [--target <url>]
+oxyc login [--env <env>] [--target <url>] [--login-env <env>...]
 ```
 
 Opens your browser to the Oxy web app, captures the session JWT via a
-loopback callback, and caches it in `~/.config/oxy/credentials.json` (keyed
-by host so dev / prod tokens are stored separately).
+loopback callback, and caches it in the credentials file, keyed by host so
+dev / prod tokens are stored separately:
+`~/Library/Application Support/oxy/credentials.json` on macOS,
+`$XDG_CONFIG_HOME/oxy/credentials.json` on Linux (default `~/.config`). It is the same file the old
+`oxy login` wrote, so an existing login keeps working.
 
 ```bash
-oxy login                        # authenticate against production
-oxy login --env local            # authenticate against a local oxy serve
-oxy login --target https://my.oxy.example.com
+oxyc login                        # authenticate against production
+oxyc login --env local            # authenticate against a local oxy serve
+oxyc login --env dev --login-env staging   # several deployments, one browser flow each
+oxyc login --target https://my.oxy.example.com
 ```
 
 After login, every `oxyc api` call for that target is automatically
-authenticated — no manual token management needed. `oxy login` and
-`oxyc login` share one credentials file, so either authenticates both.
+authenticated — no manual token management needed.
 
 ```bash
-oxy logout                       # clear the cached token for the default env
-oxy logout --env local
+oxyc logout                       # clear the cached token for the default env
+oxyc logout --env local
 ```
 
 ---
 
 ### `oxyc` — call the HTTP API from the terminal
 
-The terminal client is **`oxyc`**, a separate package (`sdk/cli`, to be
-published as `@oxy-hq/cli`). It replaced the old `oxy api` subcommand, which
-was removed from this binary.
-
-It is **not on npm yet** — build it from a checkout of the monorepo
-(`cd sdk/cli && pnpm install && pnpm build`), then run `dist/main.mjs`:
-
 ```
-# `oxyc` below is `node <repo>/sdk/cli/dist/main.mjs` until it is published.
 oxyc api <path> [-X METHOD] [-f k=v] [-F k=v] [-H 'Name: value']
 oxyc routes [FILTER] [--json]      # every endpoint THIS deployment mounts
 oxyc schema <path> [-X METHOD]     # request/response shape for one endpoint

@@ -1,10 +1,5 @@
 //! Bundled templates for custom apps, plus the placeholder renderer
-//! both the CLI scaffold and the admin-triggered GitHub scaffold use.
-//!
-//! Sharing the renderer guarantees `oxy apps init` (writes to disk)
-//! and the admin-bootstrap GitHub PR (POSTs files through the
-//! Contents API) produce identical bundles — no template drift
-//! between paths.
+//! the admin-triggered GitHub scaffold uses.
 //!
 //! Template files live at `sdk/create-oxy-app/templates/<id>/` —
 //! one canonical set, consumed by both the server-side scaffold here

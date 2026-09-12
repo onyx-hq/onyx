@@ -3,7 +3,7 @@
 // (which has no DOM lib), so these types can never leak into the browser half of
 // the app, where `btoa` exists but behaves differently.
 //
-// Not a function entry — `oxy publish` bundles the files named in oxy-app.json's
+// Not a function entry — `oxyc publish` bundles the files named in oxy-app.json's
 // `functions` map, so a .d.ts sitting here is inert.
 
 /**

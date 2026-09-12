@@ -4,7 +4,7 @@ The smallest complete [Custom App](../../../internal-docs/customer-apps.md): a h
 `index.html` plus one hashed stylesheet and one hashed module under `assets/` — no build
 step, no dependencies, no framework. `oxy seed` deploys it through the real publish path
 (`put_build` → `app_builds` → channel pointers), so it exercises the same serve code an
-`oxy publish` bundle does — and a fresh clone lands on a launcher with a working app on it.
+`oxyc publish` bundle does — and a fresh clone lands on a launcher with a working app on it.
 
 ```sh
 cargo run -p oxy-server -- seed
@@ -76,9 +76,9 @@ inline version didn't have. Leave the hash stale and returning visitors keep the
 for up to a year.
 
 This chore is unique to this seeded, build-step-free example. A real app publishes with
-`oxy publish`, which runs the build command declared in its `oxy-app.json`
+`oxyc publish`, which runs the build command declared in its `oxy-app.json`
 (`build.command`, default `pnpm build`) and uploads the result — so the re-hashing is a
-property of **the bundler you configure**, not of `oxy publish` itself. Any bundler that
+property of **the bundler you configure**, not of `oxyc publish` itself. Any bundler that
 content-addresses its output filenames regenerates the hash on every build, and the
 `create-oxy-app` Vite template does so by default. That is the property that keeps a
 publisher safe, and nothing on the serve side enforces it: `cache_control_for` applies the

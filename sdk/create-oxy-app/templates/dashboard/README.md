@@ -44,11 +44,12 @@ one-liner); it is not a default dependency.
 ## Deploying
 
 ```bash
-oxy login   --env production    # once per env; caches a token
-oxy publish --env production    # build + ship to the draft channel
-oxy publish --env production --promote   # …straight to live
+npm install -g @oxy-hq/cli       # once; installs oxyc
+oxyc login   --env production    # once per env; caches a token
+oxyc publish --env production    # build + ship to the draft channel
+oxyc publish --env production --promote   # …straight to live
 ```
 
-`oxy publish` reads `oxy-app.json`, runs the build (`pnpm install` → `pnpm
+`oxyc publish` reads `oxy-app.json`, runs the build (`pnpm install` → `pnpm
 build` → `out/` by default), resolves the target + project, and uploads the
 bundle. No CI, no project id in git. See `internal-docs/customer-apps.md` §5.

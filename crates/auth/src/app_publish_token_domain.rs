@@ -1,7 +1,7 @@
 //! App-publish-token domain logic: generation, hashing, and DB-backed resolution.
 //!
 //! App publish tokens are long-lived bearer credentials for machine auth (primarily
-//! `oxy publish` in CI). An app-admin mints one, pastes the plaintext into a
+//! `oxyc publish` in CI). An app-admin mints one, pastes the plaintext into a
 //! CI secret (`OXY_TOKEN`), and the server accepts it as a bearer credential
 //! **only on the customer-apps admin surface** (scope enforced in the request
 //! path — see `app_publish_tokens_scope` middleware in the app crate).

@@ -228,7 +228,7 @@ async fn prune_samples(db: &DatabaseConnection) -> Result<u64, sea_orm::DbErr> {
 ///
 /// `orgs: Some(..)` bounds the walk to a scoped grant's reach. The periodic sweep
 /// passes `None`: it runs as the singleton with no principal, so it is unbounded
-/// by construction, the same way `list_apps_scoped` lets the CLI pass no scope.
+/// by construction, the same way `list_apps_scoped` reads `None` as no scope.
 ///
 /// Sample pruning is deliberately NOT scoped — it is retention housekeeping on a
 /// cutoff, not a read, and skipping it for a bounded caller would let a fleet

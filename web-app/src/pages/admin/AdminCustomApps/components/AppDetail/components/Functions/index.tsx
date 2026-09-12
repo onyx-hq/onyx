@@ -8,7 +8,7 @@ import { FunctionDetail } from "./FunctionDetail";
  * The AppDetail "Functions" section: the app's Oxy Functions in its active
  * build, each expandable to its manifest config, recent invocation history,
  * and a "Run now" trigger that surfaces the resulting job run's logs. Manage +
- * debug the code-first functions shipped via `oxy publish`.
+ * debug the code-first functions shipped via `oxyc publish`.
  */
 export const Functions = ({
   appId,
@@ -32,7 +32,7 @@ export const Functions = ({
     return (
       <p className='text-muted-foreground text-xs' data-testid='admin-app-functions-empty'>
         This app ships no Oxy Functions. Add a <code>functions/&lt;name&gt;.ts</code> to the bundle
-        and <code>oxy publish</code>.
+        and <code>oxyc publish</code>.
       </p>
     );
   }

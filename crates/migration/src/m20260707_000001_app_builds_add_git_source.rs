@@ -1,5 +1,5 @@
 //! Adds per-build git provenance to `app_builds` — the source repo remote URL,
-//! commit sha, and branch captured (best-effort) by `oxy publish` — so the
+//! commit sha, and branch captured (best-effort) by `oxyc publish` — so the
 //! admin UI can link each build back to its source (Vercel-style). All columns
 //! are nullable: existing rows and non-git publishes simply carry none.
 

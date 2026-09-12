@@ -1,5 +1,5 @@
 {
-  "//": "Typecheck the server-side Oxy Functions. Separate from the app's tsconfig because functions run on the V8 isolate runtime, not the browser: NO DOM lib (the ambient `Response` is the runtime's, not the fetch API), and these files are bundled by `oxy publish` (esbuild), never by Vite. `jsxImportSource: preact` covers the email templates imported here.",
+  "//": "Typecheck the server-side Oxy Functions. Separate from the app's tsconfig because functions run on the V8 isolate runtime, not the browser: NO DOM lib (the ambient `Response` is the runtime's, not the fetch API), and these files are bundled by `oxyc publish` (esbuild), never by Vite. `jsxImportSource: preact` covers the email templates imported here.",
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],

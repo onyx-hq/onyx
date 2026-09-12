@@ -3,8 +3,8 @@
 #
 # OFF by default, and the default is the whole point. `customer-apps` — the
 # monorepo Oxy ships its own custom apps from — deleted its publish CI outright
-# and its engineers publish from their machines with `oxy login` and
-# `oxy publish`; its own docs say "there is no GitHub Actions / CI". A repo
+# and its engineers publish from their machines with `oxyc login` and
+# `oxyc publish`; its own docs say "there is no GitHub Actions / CI". A repo
 # scaffolded from this template therefore behaves the same way unless somebody
 # asks for CI publishing, rather than arriving demanding a long-lived token the
 # rest of the org has already decided it does not want.
@@ -64,7 +64,7 @@ case "$value" in
   # misreading of a switch that costs something.
   ''|false|no|off|0)
     printf 'off\n'
-    printf '::notice::CI publishing is off in this repo, which is the default. This run built the app bundles and published nothing. Publishing here is self-serve: from an app directory under apps/, run "oxy login --env dev" once and then "oxy publish --env dev" (or --env production). To publish from CI instead, add a repository VARIABLE named OXY_CI_PUBLISH with the value true — Settings, then Secrets and variables, then Actions, then the Variables tab — and give each GitHub environment its own OXY_TOKEN.\n' >&2
+    printf '::notice::CI publishing is off in this repo, which is the default. This run built the app bundles and published nothing. Publishing here is self-serve: from an app directory under apps/, run "oxyc login --env dev" once and then "oxyc publish --env dev" (or --env production). To publish from CI instead, add a repository VARIABLE named OXY_CI_PUBLISH with the value true — Settings, then Secrets and variables, then Actions, then the Variables tab — and give each GitHub environment its own OXY_TOKEN.\n' >&2
     ;;
   true|yes|on|1)
     printf 'on\n'

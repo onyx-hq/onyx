@@ -23,7 +23,7 @@
 //! from happening: `custom_apps_publish` rejects a publish whose
 //! `(app_id, build_id)` already has an `app_builds` row (409), and the CLI's
 //! default id is unique per CI *run*, not per commit, so a workflow re-run
-//! doesn't collide in the first place (`cli/commands/publish.rs::ci_build_id`).
+//! doesn't collide in the first place (`sdk/cli/src/publish/provenance.ts::ciBuildId`).
 //! If either is ever relaxed, this section is the thing that breaks.
 //!
 //! Two hot paths depend on this, and both re-fetched on *every* request

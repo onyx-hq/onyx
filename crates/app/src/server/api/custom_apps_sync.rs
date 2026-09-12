@@ -13,7 +13,7 @@
 //! `apps.published_build_id`) to resolve per request.
 
 /// One of the two channels a custom-app bundle is served from. `Draft`
-/// is what `oxy publish` writes by default (admin-preview only);
+/// is what `oxyc publish` writes by default (admin-preview only);
 /// `Published` is what viewers see after a promote.
 #[derive(Debug, Clone, Copy)]
 pub enum Channel {

@@ -219,7 +219,7 @@ fn publication_check(state: PublicationState, source: &AppSource) -> Check {
         (false, true) => Check::fail(
             NAME,
             "app is marked published but has no published build — `published_build_id` is unset, \
-             so the serve path 404s every request. Run `oxy publish`, or promote an existing build.",
+             so the serve path 404s every request. Run `oxyc publish`, or promote an existing build.",
         ),
         (false, false) => Check::fail(
             NAME,

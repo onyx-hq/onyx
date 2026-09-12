@@ -401,7 +401,7 @@ pub(super) fn build_global_routes(app_state: &AppState) -> RoleRouter {
                 .layer(middleware::from_fn(
                     oxy_owner_or_app_admin_guard::oxy_owner_or_app_admin_guard_middleware,
                 ))
-                // One-way publish entry point: CI (or local `oxy publish`) uploads
+                // One-way publish entry point: CI (or local `oxyc publish`) uploads
                 // a built bundle tarball. Registered AFTER both layers above, so
                 // it is neither app-admin-gated nor blocked-while-acting:
                 //   * NOT app-admin-gated — authorization is decided INSIDE

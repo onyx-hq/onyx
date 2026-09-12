@@ -12,7 +12,7 @@ import {
 import { Spinner } from "@/components/ui/shadcn/spinner";
 
 /**
- * `/cli-auth` — the browser side of `oxy login`.
+ * `/cli-auth` — the browser side of `oxyc login`.
  *
  * The CLI opens this page with `?port=<loopback>&state=<nonce>`. If the user
  * has a session, we hand the existing `auth_token` to the CLI's loopback

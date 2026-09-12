@@ -22,7 +22,7 @@
  * this package was published.
  *
  * Auth, target resolution and placeholder substitution are the CLI's — the
- * same `Context`, so a token cached by `oxyc login` (or `oxy login`) works
+ * same `Context`, so a token cached by `oxyc login` works
  * here with no separate setup, and `{org}` / `{workspace}` resolve the same
  * way.
  */

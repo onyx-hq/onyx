@@ -1,6 +1,6 @@
 node_modules
 
-# build output — `out/` is what `oxy publish` ships
+# build output — `out/` is what `oxyc publish` ships
 out
 dist
 

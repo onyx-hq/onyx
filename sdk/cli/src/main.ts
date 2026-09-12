@@ -25,8 +25,10 @@ import { runLogin, runLogout, runToken, runWhoami } from "./commands/auth.js";
 import { runList, runPath } from "./commands/customers.js";
 import { runOpenApi, runRoutes, runSchema } from "./commands/discover.js";
 import { runGuide } from "./commands/guide.js";
+import { runInitCi } from "./commands/init-ci.js";
 import { runLaunch } from "./commands/launch.js";
 import { runProxy } from "./commands/proxy.js";
+import { runPublish } from "./commands/publish.js";
 import { runImport, runNew, runRemove } from "./commands/registry.js";
 import { runRepos } from "./commands/repos.js";
 import { runSkillsInstall, runSkillsList } from "./commands/skills.js";
@@ -62,8 +64,8 @@ function withGlobals(command: Command): Command {
  * `--login-env a --login-env b` and `--login-env a,b` are the same set.
  *
  * Commander appends per occurrence; splitting on commas inside the reducer is
- * what makes the two spellings equivalent, which is what `oxy login` accepts
- * and therefore what a reader coming from it will type.
+ * what makes the two spellings equivalent, which is what the Rust `oxy login`
+ * accepted and therefore what a reader coming from it will type.
  */
 function collectEnvs(value: string, previous: string[]): string[] {
   const parts = value
@@ -195,7 +197,7 @@ function buildProgram(): Command {
     program
       .command("login")
       .description("authenticate against a deployment, in the browser")
-      // REPEATABLE AND COMMA-SPLIT, matching `oxy login`'s `--env`. The
+      // REPEATABLE AND COMMA-SPLIT, as the Rust `oxy login`'s `--env` was. The
       // browser opens once per env, in sequence — `--login-env dev,staging` is
       // three acts, not one act with three targets. It is a separate flag
       // rather than making `--env` repeatable because `--env` is global here
@@ -219,9 +221,8 @@ function buildProgram(): Command {
     // EVERY USAGE ERROR BEFORE ANY BROWSER OPENS. These were checked inside
     // `runLogin`, after each env had already been through its flow — so
     // `--login-env staging --assume acme -r why` opened two browsers, waited
-    // for two callbacks, and then exited USAGE. The Rust refuses at parse time
-    // (`requires = "assume"`) and before target resolution; this is the same
-    // moment, in the only place that sees the flags before the work.
+    // for two callbacks, and then exited USAGE. Checked here because this is
+    // the only place that sees the flags before the work.
     if (assumeFlag !== undefined && !opts.reason) {
       throw usageError("--assume requires --reason", "it is recorded in the impersonation log");
     }
@@ -262,7 +263,7 @@ function buildProgram(): Command {
   withGlobals(
     assume
       .command("start")
-      .description("begin acting as an org")
+      .description("begin acting as an org — --org takes a slug, a UUID, or an org URL")
       // `--org` comes from `withGlobals` — the placeholder flag and the org
       // being assumed are the same value, and two spellings for one idea is
       // how a user ends up passing the wrong one.
@@ -288,9 +289,9 @@ function buildProgram(): Command {
     assume
       .command("end")
       .description("stop acting — one org, or every live session")
-      // The Rust declares `conflicts_with = "all"`. Silently preferring one is
-      // the weaker half of that pair when the verb is destructive: a caller who
-      // typed both meant something, and neither reading is safe to guess.
+      // Both together refuse. Silently preferring one is the wrong call when
+      // the verb is destructive: a caller who typed both meant something, and
+      // neither reading is safe to guess.
       .option("--all", "end every live session (refuses alongside --org)")
   ).action(async (opts: Record<string, unknown>) => {
     if (opts.all && opts.org) {
@@ -503,10 +504,10 @@ function buildProgram(): Command {
       .option("--yes", "confirm proxying to a production target")
       .addHelpText(
         "after",
-        "\nGuardrails, on by default and carried over from `oxy proxy`: side-effecting\n" +
-          "calls are HELD, tracking events are DROPPED, auth endpoints reach the backend\n" +
-          "unauthenticated so sign-in works, and the cached token is a fallback that never\n" +
-          "overrides a real browser session.\n"
+        "\nGuardrails, on by default: side-effecting calls are HELD, tracking events are\n" +
+          "DROPPED, auth endpoints reach the backend unauthenticated so sign-in works, and\n" +
+          "the cached token is a fallback that never overrides a real browser session.\n" +
+          "\nEach Oxy Function call prints `↳ <status> fn <name>  request_id=…  trace_id=…`.\n"
       )
   ).action(async (opts: Record<string, unknown>) => {
     await runProxy(createContext(globals(opts)), {
@@ -514,6 +515,68 @@ function buildProgram(): Command {
       allowWrites: opts.allowWrites as boolean | undefined,
       allowEvents: opts.allowEvents as boolean | undefined,
       yes: opts.yes as boolean | undefined
+    });
+  });
+
+  withGlobals(
+    program
+      .command("publish")
+      .description("build a custom app and publish its bundle (a draft, unless --promote)")
+      .option(
+        "--app <slug>",
+        "app slug (default: OXY_APP, then oxy-app.json slug, then apps/<org>/<app>/)"
+      )
+      .option("--build-id <id>", "unique per publish (default: the CI run, else random)")
+      .option("--dir <path>", "publish this pre-built directory instead of running the build")
+      .option("--promote", "publish straight to the live channel")
+      .option("--name <name>", "display name override for the app")
+      .option("--repo <url>", "git remote to record (default: the checkout's origin)")
+      .option("--commit <sha>", "commit to record (default: HEAD, or GITHUB_SHA)")
+      .option("--branch <name>", "branch to record (default: the checkout's, or GITHUB_REF_NAME)")
+      .option("--build-only", "build and bundle functions, then stop — no credential needed")
+      .option(
+        "--prebuilt",
+        "with --dir: its functions are already bundled; check them, don't rebuild"
+      )
+      .option("--json", "print the server's result as JSON")
+      .addHelpText(
+        "after",
+        "\n--org takes a slug or a UUID (default: OXY_ORG, then oxy-app.json orgSlug, then\n" +
+          "the apps/<org>/<app>/ directory). --project pins the workspace; otherwise it is\n" +
+          "resolved from the target. .env.local and .env are loaded without overriding.\n" +
+          "\nAuth: the --token-env variable, then `oxyc login`'s cache — or, in a GitHub\n" +
+          "Actions job with `id-token: write` and neither, trusted publishing via OIDC.\n"
+      )
+  ).action(async (opts: Record<string, unknown>) => {
+    await runPublish(createContext(globals(opts)), {
+      app: opts.app as string | undefined,
+      buildId: opts.buildId as string | undefined,
+      dir: opts.dir as string | undefined,
+      promote: opts.promote as boolean | undefined,
+      name: opts.name as string | undefined,
+      repo: opts.repo as string | undefined,
+      commit: opts.commit as string | undefined,
+      branch: opts.branch as string | undefined,
+      buildOnly: opts.buildOnly as boolean | undefined,
+      prebuilt: opts.prebuilt as boolean | undefined,
+      json: opts.json as boolean | undefined
+    });
+  });
+
+  withGlobals(
+    program
+      .command("init-ci")
+      .description(
+        "write a GitHub Actions workflow that publishes this app with trusted publishing"
+      )
+      .option("--app <org/app>", "the app to publish (default: this directory's oxy-app.json)")
+      .option("--environment <name>", "GitHub environment the publish job runs in", "oxy-publish")
+      .option("--force", "overwrite an existing workflow")
+  ).action((opts: Record<string, unknown>) => {
+    runInitCi(createContext(globals(opts)), {
+      app: opts.app as string | undefined,
+      environment: opts.environment as string | undefined,
+      force: opts.force as boolean | undefined
     });
   });
 

@@ -27,7 +27,7 @@
 # Luong (@luong-komorebi) primary
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Custom Apps Platform (code-first React bundles shipped via `oxy publish`)
+# Custom Apps Platform (code-first React bundles shipped via `oxyc publish`)
 crates/app/src/server/api/custom_apps_serve/       @luong-komorebi @NTtanh
 crates/app/src/server/api/custom_apps_functions/   @luong-komorebi @NTtanh
 crates/app/src/server/api/custom_apps_storage/     @luong-komorebi @NTtanh

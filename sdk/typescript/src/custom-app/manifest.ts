@@ -517,7 +517,7 @@ function validateManifest(raw: unknown, url: string): OxyAppManifest {
   }
   if (!isValidSlug(raw.slug)) {
     // The slug becomes the app's OLTP schema/role name, a repo_path segment and
-    // the served `/customer-apps/<org>/<slug>/` base path — `oxy publish` (and
+    // the served `/customer-apps/<org>/<slug>/` base path — `oxyc publish` (and
     // `app_writer_name`) reject a bad one, so fail here at build, not in CI.
     throw new Error(
       `oxy-app.json: \`slug\` ${JSON.stringify(raw.slug)} is invalid — use 1–63 lowercase ` +
@@ -562,7 +562,7 @@ const FUNCTION_NAME_RE = /^[a-z][a-z0-9-]{0,63}$/;
  *
  * This runs at manifest LOAD (app boot / `pnpm dev`), not at `oxy build` — the
  * build-time gate is the vite plugin's `validateManifest`, which now checks
- * function names too. `oxy publish` also validates them locally before esbuild,
+ * function names too. `oxyc publish` also validates them locally before esbuild,
  * so a bad name fails before the upload regardless.
  */
 function validateFunctions(raw: unknown): Record<string, OxyAppFunctionManifest> {

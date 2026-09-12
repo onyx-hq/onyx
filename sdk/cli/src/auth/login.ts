@@ -1,5 +1,5 @@
 /**
- * The browser loopback login — the same dance `oxy login` does, wire for wire.
+ * The browser loopback login — the same dance the Rust `oxy login` did, wire for wire.
  *
  * Bind an ephemeral `127.0.0.1` port, send the browser to
  * `<target>/cli-auth?port&state`, and catch the token the web app hands back to
@@ -7,8 +7,8 @@
  * session, so there is no new minting endpoint and no password anywhere.
  *
  * Every constant here — the callback path, the two query parameter names, the
- * `state` check, the five-minute deadline — is transcribed from
- * `crates/app/src/cli/commands/login.rs`. It is a protocol shared with a page
+ * `state` check, the five-minute deadline — was transcribed from
+ * the Rust `login.rs` (since deleted). It is a protocol shared with a page
  * we do not change in this repo, so drifting from it is a silent
  * "login hangs forever", not a compile error.
  */
@@ -28,9 +28,9 @@ interface UserResponse {
   is_app_admin?: boolean;
 }
 
-/** Matches the Rust's `SUCCESS_HTML` — the tab the user is left looking at. */
+/** The tab the user is left looking at. */
 const SUCCESS_HTML =
-  "<!doctype html><meta charset=utf-8><title>oxy login</title>" +
+  "<!doctype html><meta charset=utf-8><title>oxyc login</title>" +
   '<body style="font-family:system-ui;padding:3rem;text-align:center">' +
   "<h2>Logged in to oxy ✓</h2><p>You can close this tab and return to your terminal.</p>";
 

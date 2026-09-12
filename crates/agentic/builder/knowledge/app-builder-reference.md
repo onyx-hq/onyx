@@ -19,7 +19,7 @@ that output). Mental model: `task -> output -> display`.
 > **Two app models — don't confuse them.** This card covers the declarative
 > `*.app.yml` app (tasks + displays, rendered by `oxy serve --enterprise`). The
 > other model is a **custom-code (React/Vite) app** identified by an
-> **`oxy-app.json`** manifest at the app root and deployed with `oxy publish` —
+> **`oxy-app.json`** manifest at the app root and deployed with `oxyc publish` —
 > see "## Custom-code apps (`oxy-app.json`)" at the end. `oxy-app.json` is the
 > deploy manifest for that path, **not** an alternative to `*.app.yml`; never
 > claim "there is no oxy-app.json." Build a `*.app.yml` for a dashboard; build
@@ -654,7 +654,7 @@ running the smoke test whenever the warehouse tools are reachable.
 ## Custom-code apps (`oxy-app.json`)
 
 Everything above is the declarative `*.app.yml` path (no manifest needed). The
-**custom-code** path is a React/TS/Vite front-end deployed with `oxy publish`;
+**custom-code** path is a React/TS/Vite front-end deployed with `oxyc publish`;
 every publishable app is identified by an **`oxy-app.json`** manifest at its
 root. Build this path when the user wants bespoke UI beyond tables/charts/
 markdown, or says "publish", "deploy", "oxy-app.json", or points at a
@@ -677,7 +677,7 @@ local dev):
    code-split chunks resolve under `/customer-apps/<org>/<app>/`; local
    `pnpm dev`/`build` fall back to `/`) **and** a `copyOxyAssets()` plugin that
    copies `oxy-app.json` + its referenced `icon`/`art` into `dist/` on
-   `closeBundle`. Load-bearing: `oxy publish` tars only the built dir, and the
+   `closeBundle`. Load-bearing: `oxyc publish` tars only the built dir, and the
    server captures launcher-card metadata from the bundle's own `oxy-app.json`
    (`app_builds.manifest_json`) — a manifest left only at the module root never
    reaches the server.
@@ -696,11 +696,12 @@ local dev):
    ships its platform binary as an optional dependency and runs fine without its
    postinstall.)
 
-**Publish flow:** run `oxy publish` from the module dir — it builds, tars
+**Publish flow:** run `oxyc publish` from the module dir — it builds, tars
 `dist/`, and uploads the app as a **draft**; an Oxy admin promotes the draft to
 live in the admin UI (CI never publishes straight to the live channel). First
-publish auto-registers the app when `--project` is passed. `oxy publish`
-requires a recent CLI (module-designs pins `0.5.97`); older binaries (e.g.
-`0.5.54`) predate the subcommand — check `oxy publish --help` first. Reference
+publish auto-registers the app when `--project` is passed. `oxyc` is the
+`@oxy-hq/cli` npm package (`npm install -g @oxy-hq/cli`); the `oxy` binary no
+longer has a `publish` subcommand. Check `oxyc publish --help` for the flags.
+Reference
 implementations live in `module-designs/` (`DEPLOYMENT.md` + each module's
 `oxy-app.json`).

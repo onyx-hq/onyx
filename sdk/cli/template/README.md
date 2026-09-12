@@ -17,7 +17,7 @@ Start a session scoped to this customer with:
 | `semantics/topics/` | `*.topic.yml` — question areas: a base view plus the views it may join to. Not one per table. |
 | `pipelines/` | `*.airway.yml` — Airway ELT pipelines. Credentials live in the secret manager, never in the YAML. |
 | `workflows/` | `*.automation.yml` — automations. `.automation.yml` is the canonical extension; `.procedure.yml` is legacy and still accepted, so do not start new files with it. |
-| `apps/` | Custom app bundles (React + Vite, shipped with `oxy publish`). |
+| `apps/` | Custom app bundles (React + Vite, shipped with `oxyc publish`). |
 | `config.yml` | Workspace root config — models, databases, defaults. |
 | `.github/workflows/` | GitHub Actions CI for this repo. Not the same thing as `workflows/` above, which holds oxy automations — the two are one letter of context apart and easy to confuse. |
 | `.github/scripts/` | Shell the workflows call. Kept out of the YAML because a `run:` block can only ever be executed on a runner, while a script can be run — and tested — anywhere. |
@@ -86,7 +86,7 @@ running it against **a real oxy in the cloud** — there is no local warehouse,
 no fixture data, and no local `oxy serve` to point at. From the repo root:
 
 ```bash
-oxy login --env dev      # once per env; opens a browser, caches a token
+oxyc login --env dev     # once per env; opens a browser, caches a token
 pnpm dev --env dev       # starts everything
 ```
 
@@ -97,7 +97,7 @@ stops both together when you press Ctrl-C.
 **`--env` is required, and that is deliberate.** It says which oxy the app
 reads from — `dev`, `staging`, `production`, a full URL
 (`--env https://acme.oxygen-hq.com`), or any name the app's own `oxy-app.json`
-declares under `environments`. The underlying `oxy proxy` defaults to
+declares under `environments`. The underlying `oxyc proxy` defaults to
 **production** if nothing says otherwise, and a `pnpm dev` that quietly serves
 a customer's live data is not something this repo will do. `--env production`
 additionally needs `--yes`.
@@ -113,7 +113,7 @@ pnpm dev --env dev sales-dashboard
 
 | Process | Port | What it is |
 | --- | --- | --- |
-| `oxy proxy --env <env>` | `3000` | Background. Every `/api` call the app makes goes through here, signed with the token `oxy login` cached, and out to the cloud. It stands in for a local `oxy serve`, which is why the port is not configurable — the Vite plugin already proxies `/api` to `3000`. |
+| `oxyc proxy --env <env>` | `3000` | Background. Every `/api` call the app makes goes through here, signed with the token `oxyc login` cached, and out to the cloud. It stands in for a local `oxy serve`, which is why the port is not configurable — the Vite plugin already proxies `/api` to `3000`. Each Oxy Function call prints a `↳ <status> fn <name>  request_id=…  trace_id=…` line — the ids to look up when one fails. |
 | `pnpm dev` in the app | `5173` | Foreground. Vite, with hot reload. **This is the URL you open**: <http://localhost:5173>. |
 
 Ctrl-C stops both, and it always returns: a proxy that ignores the polite
@@ -139,9 +139,11 @@ that an afternoon of local clicking cannot change what the customer sees:
 ### If something is wrong
 
 - **Requests come back 401** — the cached token for that env has expired.
-  `oxy login --env <env>` again.
-- **`the 'oxy' CLI is not on your PATH`** — install it with
-  `curl -sSfL https://get.oxy.tech | bash`; it lands in `~/.local/bin`.
+  `oxyc login --env <env>` again.
+- **`the 'oxyc' CLI is not on your PATH`** — install it with
+  `npm install -g @oxy-hq/cli`. A global install, not `npx`: Ctrl-C stops the
+  proxy by pid, and a wrapper process in between keeps the signal from reaching
+  it.
 - **`this repo has no custom apps yet`** — expected on a fresh repo, and it is
   not an error. The message says how to add one.
 - **A change to `apps/` does not show up** — Vite serves the app, but the data
@@ -160,8 +162,8 @@ a long-lived credential sitting in it.
 From the app's own directory under `apps/`:
 
 ```bash
-oxy login --env dev        # once per env; opens a browser, caches a token
-oxy publish --env dev      # a draft, to the dev environment
+oxyc login --env dev       # once per env; opens a browser, caches a token
+oxyc publish --env dev     # a draft, to the dev environment
 ```
 
 `--env` is not optional in practice. The CLI defaults it to **production**, so
@@ -212,14 +214,14 @@ opted in.
 ### Where an opted-in CI publishes
 
 `.github/workflows/publish.yaml` builds every bundle under `apps/` and ships
-it with `oxy publish`. It runs on a push to `main` that touches `apps/`, the
+it with `oxyc publish`. It runs on a push to `main` that touches `apps/`, the
 lockfile, or the workflow itself, and it can be run by hand from the Actions
 tab.
 
 **Where it publishes is decided by how it was triggered, and it is always
 said out loud:**
 
-| Trigger | Event | `oxy publish --env` | Channel | Reviewers |
+| Trigger | Event | `oxyc publish --env` | Channel | Reviewers |
 | --- | --- | --- | --- | --- |
 | push to `main` | `push` | `dev` | draft | none |
 | Actions tab (**Run workflow**) | `workflow_dispatch` | `production` | draft, or live with **Promote** | whatever `production` requires |
@@ -231,7 +233,7 @@ by `customer-tooling`'s own suite.
 
 That mapping lives in `.github/scripts/publish-env.sh`, and a trigger it has
 no entry for **fails the run** rather than picking one. The reason is worth
-knowing, because it was a live bug in this workflow: `oxy publish` defaults
+knowing, because it was a live bug in this workflow: `oxyc publish` defaults
 `--env` to **production**, so an invocation that leaves the flag off does not
 publish "nowhere in particular" — it publishes at the customer's live
 environment. Every publish here names its environment explicitly, and there
@@ -250,7 +252,7 @@ tidiness one. `build` runs `pnpm install` and `pnpm -r build` — which is to
 say it executes the postinstall and build scripts of every dependency your
 apps pull in — and holds no publish credential at all. It hands the built
 output to `publish` as a workflow artifact. `publish` holds `OXY_TOKEN`, and
-runs no package script: `oxy publish --dir` uploads a pre-built directory
+runs no package script: `oxyc publish --dir` uploads a pre-built directory
 as-is instead of building anything. So a compromised dependency in an app's
 tree never runs on a runner where the token exists.
 
@@ -325,8 +327,8 @@ worth knowing exactly what the two ways of doing it are:
   reviewed a draft and want that exact bundle live, this is the one you want.
 - **The Actions tab**, running this workflow with a **Ref** and **Promote**
   ticked, **rebuilds that ref and publishes the result live**. It does not
-  promote an existing draft — no command in the `oxy` CLI can, so the
-  workflow cannot either. If `main` has moved since the draft you reviewed,
+  promote an existing draft — `oxyc publish` cannot, so the workflow cannot
+  either. If `main` has moved since the draft you reviewed,
   this ships the newer commit, under a new build id.
 
 That is why the ref is an explicit, required input rather than something the

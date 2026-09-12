@@ -13,7 +13,7 @@ authentication, querying, and streaming for you.
 
 <Note>
 This is the code-first **Customer Apps** platform (React bundles shipped with
-`oxy publish`) — distinct from YAML [Data Apps](/guide/build/data-apps)
+`oxyc publish`) — distinct from YAML [Data Apps](/guide/build/data-apps)
 (`.app.yml` dashboards). Reach for the SDK when you want full control over the
 UI; reach for Data Apps when a declarative dashboard is enough.
 </Note>
@@ -115,11 +115,12 @@ already read — access is always scoped to project membership.
 
 ## Deploy
 
-Build the bundle and ship it to Oxygen with a one-way deploy:
+Build the bundle and ship it to Oxygen with a one-way deploy, using the `oxyc` CLI:
 
 ```bash
+npm install -g @oxy-hq/cli   # once
 pnpm build
-oxy publish
+oxyc publish
 ```
 
 Oxygen serves published apps as launcher cards on the home page and under

@@ -1,6 +1,6 @@
 /**
  * App publish tokens — long-lived bearer credentials for machine auth
- * (primarily `oxy publish` in CI). Minted/listed/revoked by any Global
+ * (primarily `oxyc publish` in CI). Minted/listed/revoked by any Global
  * Admin at `/admin/publish-tokens`; a live token authenticates as its
  * minting admin **only on the customer-apps publish surface**. Backend:
  * `/api/admin/app-publish-tokens`.

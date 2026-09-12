@@ -1,5 +1,5 @@
 // notify — an example Oxy Function: a server-side handler that emails the
-// INVOKING USER a welcome message. Oxy bundles `functions/*` at `oxy publish`
+// INVOKING USER a welcome message. Oxy bundles `functions/*` at `oxyc publish`
 // and runs them in a sandboxed isolate with a data-plane `ctx`.
 //
 // It's declared in oxy-app.json under `functions.notify` with

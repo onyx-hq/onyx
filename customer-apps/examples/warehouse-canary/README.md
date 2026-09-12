@@ -71,7 +71,7 @@ oxyc api /api/admin/apps/<app-id>/functions/canary/runs -X POST --env prod
 4. **Publish** from this directory:
 
    ```sh
-   oxy publish
+   oxyc publish
    ```
 
    Publishing registers the `*/5 * * * *` schedule. Scheduled runs need the

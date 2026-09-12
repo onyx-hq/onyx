@@ -15,7 +15,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/shadcn/
  * history in the detail pane has the fields and says exactly which is
  * missing.
  *
- * `oxy publish` warns about this at publish time too. This is the surface for
+ * `oxyc publish` warns about this at publish time too. This is the surface for
  * the ones that already shipped — including every app published before that
  * warning existed.
  */

@@ -8,7 +8,7 @@ import { defineConfig } from "vite";
 // dev, and resolves the base path the bundle is served under.
 //
 // The base path resolves from (in order):
-//   1. `OXY_APP_BASE_PATH` — `oxy publish` sets this from the org it resolves
+//   1. `OXY_APP_BASE_PATH` — `oxyc publish` sets this from the org it resolves
 //      for the target environment, so the org is never hardcoded here.
 //   2. `/` — the dev fallback, fine for `pnpm dev` and a standalone build.
 //

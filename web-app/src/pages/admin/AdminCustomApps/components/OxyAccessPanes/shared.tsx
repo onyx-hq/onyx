@@ -81,11 +81,11 @@ export const RowAction = ({
   </Tooltip>
 );
 
-/** Copies the workspace's `oxy publish` command (shown in the tooltip) and
+/** Copies the workspace's `oxyc publish` command (shown in the tooltip) and
  *  flips to a check — the publish snippet, collapsed to one dense icon. */
 export const CopyPublishAction = ({ workspaceId }: { workspaceId: string }) => {
   const [copied, setCopied] = useState(false);
-  const cmd = `oxy publish --env production --project ${workspaceId}`;
+  const cmd = `oxyc publish --env production --project ${workspaceId}`;
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(cmd);

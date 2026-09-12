@@ -223,7 +223,7 @@ async fn the_reserved_namespace_is_behind_the_apps_own_gate() {
 
 // ── The asset manifest and what it produces ──────────────────────────────────
 
-/// The seed installs the manifest through the same helper `oxy publish` uses, so
+/// The seed installs the manifest through the same helper `oxyc publish` uses, so
 /// this pins both halves of that seam: publish writes it at the path serve reads
 /// from, in the shape serve parses.
 #[tokio::test]

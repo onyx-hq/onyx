@@ -32,7 +32,7 @@ use std::env;
 /// value look like the command.
 ///
 /// Only these three get the OpenTelemetry layer. A one-shot command
-/// (`oxy publish`, `oxy run`) has no reader for its trace ids, and in a shell
+/// (`oxy run`, `oxy validate`) has no reader for its trace ids, and in a shell
 /// that happens to carry `OTEL_EXPORTER_OTLP_ENDPOINT` — `.env` is
 /// auto-loaded — it would pay the exporter's flush at every exit.
 fn server_command(args: &[String]) -> Option<&str> {

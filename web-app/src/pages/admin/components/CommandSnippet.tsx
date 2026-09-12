@@ -5,7 +5,7 @@ import { cn } from "@/libs/shadcn/utils";
 /**
  * A single-line, copy-to-clipboard command chip — a monospace snippet with a
  * trailing copy button that flips to a check. For precomposed CLI commands the
- * operator grabs and runs (e.g. an `oxy publish` invocation).
+ * operator grabs and runs (e.g. an `oxyc publish` invocation).
  */
 export const CommandSnippet = ({ command, className }: { command: string; className?: string }) => {
   const { copied, handleCopy } = useCopyTimeout();

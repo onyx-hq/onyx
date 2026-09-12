@@ -101,20 +101,16 @@ while IFS= read -r manifest; do
   app_dir="${manifest%/oxy-app.json}"
 
   if ! jq -e 'type == "object"' "$root/$manifest" >/dev/null 2>&1; then
-    printf '::error file=%s::%s is not a JSON object. oxy publish reads this file for the app identity and will not get past it.\n' \
+    printf '::error file=%s::%s is not a JSON object. oxyc publish reads this file for the app identity and will not get past it.\n' \
       "$manifest" "$manifest" >&2
     bad=1
     continue
   fi
 
-  # `oxy publish` resolves the app slug as `--app`, then OXY_APP, then the
-  # manifest, then the `<app>` segment of an `apps/<org>/<app>/` path — that
-  # is the IMPLEMENTATION's order (publish.rs:779-785). Note that
-  # `oxy publish --help` states a different one, manifest before OXY_APP; the
-  # code is what runs, and its own comment agrees with the code. It makes no
-  # difference here either way: this workflow sets neither the flag nor the
-  # env var, and both readings end `manifest, then path` — the only two links
-  # this check depends on.
+  # `oxyc publish` resolves the app slug as `--app`, then OXY_APP, then the
+  # manifest, then the `<app>` segment of an `apps/<org>/<app>/` path — its
+  # `--help` says the same. This workflow sets neither the flag nor the env
+  # var, so `manifest, then path` are the only two links this check depends on.
   slug="$(jq -r '.slug // ""' "$root/$manifest")"
   if [ -z "$slug" ] || [ "$slug" = "null" ]; then
     printf '::error file=%s::%s has no "slug". That is the app'"'"'s identity on the platform and there is nowhere else to get it.\n' \
@@ -123,11 +119,11 @@ while IFS= read -r manifest; do
     continue
   fi
 
-  # Same resolution chain for the org (publish.rs:773-778), with one
+  # Same resolution chain for the org, with one
   # difference that matters: the path fallback only fires for the nested
   # `apps/<org>/<app>/` layout. In the flat `apps/<app>/` layout there is no
   # `<org>` segment, so a manifest with no `orgSlug` leaves the org
-  # unresolvable — and `oxy publish` needs it to look the project up on the
+  # unresolvable — and `oxyc publish` needs it to look the project up on the
   # build-config endpoint.
   org="$(jq -r '.orgSlug // ""' "$root/$manifest")"
   nested=0
@@ -135,13 +131,13 @@ while IFS= read -r manifest; do
     apps/*/*) nested=1 ;;
   esac
   if { [ -z "$org" ] || [ "$org" = "null" ]; } && [ "$nested" -eq 0 ]; then
-    printf '::error file=%s::%s has no "orgSlug", and %s is not an apps/<org>/<app>/ path for oxy publish to infer one from. Add "orgSlug" to the manifest.\n' \
+    printf '::error file=%s::%s has no "orgSlug", and %s is not an apps/<org>/<app>/ path for oxyc publish to infer one from. Add "orgSlug" to the manifest.\n' \
       "$manifest" "$manifest" "$app_dir" >&2
     bad=1
     continue
   fi
 
-  # `build.outDir`, defaulting to `out` — the same default `oxy publish`
+  # `build.outDir`, defaulting to `out` — the same default `oxyc publish`
   # applies. Guarded with a type check because a manifest whose `build` is a
   # string (or a number) would make plain `.build.outDir` a jq error, and a jq
   # error under `set -e` would abort the whole scan on one malformed file

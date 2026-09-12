@@ -4,24 +4,30 @@
  * An OUTBOUND sidecar: it does not serve the app (your dev server does). It
  * listens on `--port` (default 3000, where a local `oxy serve` would be, so a
  * dev server's existing Oxy proxy target already matches) and forwards the Oxy
- * calls your dev server sends it — attaching the `oxy login` bearer and
+ * calls your dev server sends it — attaching the `oxyc login` bearer and
  * applying guardrails — to the resolved cloud target.
  *
- * A PORT of `crates/app/src/cli/commands/proxy.rs`, and the guardrails are
- * carried across verbatim rather than reinvented, because each one is a
- * decision somebody argued and every one of them is about not writing to a
- * customer's production data from a laptop:
+ * It replaced the Rust `oxy proxy`, and the guardrails came across verbatim
+ * rather than reinvented, because each one is a decision somebody argued and
+ * every one of them is about not writing to a customer's production data from
+ * a laptop:
  *
  *   - side-effecting calls are HELD by default (`--allow-writes` forwards)
  *   - tracking events are DROPPED by default (`--allow-events` forwards)
  *   - auth endpoints reach the backend UNAUTHENTICATED, so sign-in works
  *   - the dev token is a FALLBACK, never an override of a real browser session
  *   - `Set-Cookie` is rewritten so a cloud cookie is storable on localhost
+ *   - a production target is refused without `--yes`
+ *
+ * An Oxy Function call also gets a W3C trace (the SDK's, or one minted here),
+ * and its `request_id` / `trace_id` are printed per call.
  *
  * The token lives only in this process and is never returned to the browser.
  * Authorization is decided by the cloud; the proxy only forwards.
  */
 
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import type { Context } from "../context/resolve.js";
@@ -54,8 +60,8 @@ const MAX_REQUEST_BODY = 25 * 1024 * 1024;
  * browser fails with `ERR_CONTENT_DECODING_FAILED` on exactly the
  * `POST /projects/{id}/query` round-trip this command exists for.
  *
- * The Rust original is safe by omission rather than by design: its `reqwest`
- * is built without the `gzip`/`brotli` features, so it never asks for a
+ * The Rust original was safe by omission rather than by design: its `reqwest`
+ * was built without the `gzip`/`brotli` features, so it never asked for a
  * compressed body and never had the case.
  */
 const HOP_BY_HOP = new Set([
@@ -148,7 +154,19 @@ export function buildRequestHeaders(
   path: string
 ): Record<string, string> {
   const headers: Record<string, string> = {};
-  for (const name of ["content-type", "accept", "cookie", "authorization", "origin", "referer"]) {
+  // `traceparent` / `tracestate` are the SDK's W3C trace context. The trace a
+  // page stamps on its error (`error.traceId`) must be the one the request
+  // carried, or that id names a trace that exists nowhere.
+  for (const name of [
+    "content-type",
+    "accept",
+    "cookie",
+    "authorization",
+    "origin",
+    "referer",
+    "traceparent",
+    "tracestate"
+  ]) {
     const value = incoming[name];
     if (typeof value === "string") headers[name] = value;
     else if (Array.isArray(value) && value[0]) headers[name] = value[0];
@@ -156,6 +174,57 @@ export function buildRequestHeaders(
   const hasAuth = "cookie" in headers || "authorization" in headers;
   if (!hasAuth && !isAuthPath(path) && token) headers.authorization = `Bearer ${token}`;
   return headers;
+}
+
+/**
+ * The function name when `path` is an Oxy Function call —
+ * `/customer-apps/<org>/<slug>/fn/<name>[/…]`, the one call this proxy
+ * annotates with its ids. A bundle asset that merely contains `/fn/` is not.
+ */
+export function functionRoute(path: string): string | undefined {
+  const [customerApps, org, slug, fn, name] = (path.split("?")[0] ?? path)
+    .split("/")
+    .filter(Boolean);
+  return customerApps === "customer-apps" && org && slug && fn === "fn" ? name : undefined;
+}
+
+/**
+ * The trace id of a well-formed W3C `traceparent` — version, a non-zero 32-hex
+ * trace id, a non-zero 16-hex span id, flags — or `undefined`. Anything else is
+ * rejected whole, as the server's extractor would: a printed id must be real.
+ */
+export function traceIdOf(traceparent: string): string | undefined {
+  const [version, trace, span, flags, ...rest] = traceparent.split("-");
+  const hex = (s: string | undefined, len: number) =>
+    s !== undefined && s.length === len && /^[0-9a-f]+$/i.test(s);
+  const nonZero = (s: string | undefined) => s !== undefined && /[^0]/.test(s);
+  const ok =
+    rest.length === 0 &&
+    hex(version, 2) &&
+    hex(trace, 32) &&
+    nonZero(trace) &&
+    hex(span, 16) &&
+    nonZero(span) &&
+    hex(flags, 2);
+  return ok ? trace : undefined;
+}
+
+/**
+ * Keep a well-formed inbound `traceparent` (the SDK minted it) or mint a sampled
+ * one in its place, and return the trace id either way.
+ *
+ * A rejected header takes its `tracestate` with it (W3C): vendor state from a
+ * trace that no longer applies must not ride on the new one. v4 UUIDs carry a
+ * version nibble inside both slices, so neither id can come out all-zero.
+ */
+export function ensureTraceparent(headers: Record<string, string>): string {
+  const existing = traceIdOf(headers.traceparent ?? "");
+  if (existing) return existing;
+  delete headers.tracestate;
+  const traceId = randomUUID().replaceAll("-", "");
+  const spanId = randomUUID().replaceAll("-", "").slice(0, 16);
+  headers.traceparent = `00-${traceId}-${spanId}-01`;
+  return traceId;
 }
 
 /** Read a request body, refusing anything past the cap. */
@@ -189,20 +258,21 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 /**
  * Is this target a production deployment?
  *
- * A PURE PREDICATE, and exported, because it is the one guardrail this port
- * adds on top of the Rust — so it has no prior art to lean on, and a regex is
- * the kind of thing that goes wrong quietly. Testing it through `runProxy`
- * would mean starting a server that never exits for every negative case.
+ * A PURE PREDICATE, and exported, because a host match is the kind of thing
+ * that goes wrong quietly. Testing it through `runProxy` would mean starting a
+ * server that never exits for every negative case.
  *
  * Matched on the HOST, after `parseEnvUrl` has already canonicalised an org
  * subdomain (`acme.oxygen-hq.com`) to the product host — so naming a customer's
  * own subdomain is refused too.
  *
- * NARROWER THAN THE RUST IN ONE CASE, deliberately: `proxy.rs` also refuses on
- * the env NAME, so a manifest mapping `production` to a non-prod URL is refused
- * there and allowed here. Here the URL is the truth — an `oxy-app.json` that
- * deliberately points `production` somewhere else is a statement about where
- * production is, and refusing it would make the manifest unusable.
+ * NOT ON THE ENV NAME, deliberately, which is where the Rust `oxy proxy` this
+ * replaced differed: it refused `--env production` whatever URL that resolved
+ * to, and so also refused `--target http://localhost:3000` with no `--env`
+ * (the name defaulted to production). Here the URL is the truth — an
+ * `oxy-app.json` that deliberately points `production` somewhere else is a
+ * statement about where production is, and refusing it would make the manifest
+ * unusable.
  */
 export function isProductionTarget(target: string): boolean {
   let host: string;
@@ -264,8 +334,7 @@ export async function runProxy(ctx: Context, flags: ProxyFlags): Promise<void> {
       // renders "Access denied — check the oxy server logs", which discards
       // the body written here specifically to say why and sends the developer
       // to a server's logs for something their own laptop did. 409 has no
-      // branch there, so the message survives. The Rust original returns 409
-      // for the same reason.
+      // branch there, so the message survives.
       json(res, 409, {
         error: "held_by_oxyc_proxy",
         message: `oxyc proxy holds side-effecting calls by default. Re-run with --allow-writes to forward ${method} ${path}.`
@@ -281,13 +350,37 @@ export async function runProxy(ctx: Context, flags: ProxyFlags): Promise<void> {
       return;
     }
 
+    // The browser going away takes the upstream request with it. Without this
+    // an SSE stream nobody reads stays open against the cloud until it ends on
+    // its own, which for an agent run is minutes.
+    const abort = new AbortController();
+    res.on("close", () => {
+      if (!res.writableFinished) abort.abort();
+    });
+
     try {
+      const headers = buildRequestHeaders(req.headers, token, path);
+      // A function call gets a trace of its own, minted here when the SDK did
+      // not already send one, so the line printed below names the trace an
+      // operator would open — the developer who just watched the call fail
+      // should not have to find the id by hand.
+      const fn = functionRoute(path);
+      const traceId = fn ? ensureTraceparent(headers) : undefined;
       const upstream = await fetch(`${target.replace(/\/+$/, "")}${path}`, {
         method,
-        headers: buildRequestHeaders(req.headers, token, path),
+        headers,
         body: method === "GET" || method === "HEAD" ? undefined : body,
-        redirect: "manual"
+        redirect: "manual",
+        signal: abort.signal
       });
+      if (fn) {
+        // Unconditional, not `log.info`: `--quiet` must not hide the one line
+        // this proxy prints that you would paste somewhere else.
+        const requestId = upstream.headers.get("x-oxy-request-id") ?? "-";
+        process.stderr.write(
+          `  ↳ ${upstream.status} fn ${fn}  request_id=${requestId}  trace_id=${traceId}\n`
+        );
+      }
 
       const outHeaders: Record<string, string | string[]> = {};
       upstream.headers.forEach((value, name) => {
@@ -302,15 +395,30 @@ export async function runProxy(ctx: Context, flags: ProxyFlags): Promise<void> {
       res.writeHead(upstream.status, outHeaders);
       if (upstream.body) {
         // Streamed, not buffered: responses are the large payloads here, and
-        // an SSE stream buffered to completion never arrives at all.
+        // an SSE stream buffered to completion never arrives at all. Waits on
+        // `drain` so a slow browser holds the upstream back rather than this
+        // process buffering the whole result set on its behalf.
         for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) {
-          res.write(chunk);
+          if (!res.write(chunk)) await once(res, "drain", { signal: abort.signal });
         }
       }
       res.end();
       log.info(`${upstream.status}  ${method} ${path}`);
     } catch (cause) {
+      if (abort.signal.aborted) {
+        log.info(`${out.dim("closed")}  ${method} ${path}  (the browser went away)`);
+        return;
+      }
       log.error(`${method} ${path} failed: ${(cause as Error).message}`);
+      // Once the status is on the wire there is no error response left to
+      // send: a second `writeHead` throws, and a throw in this async handler is
+      // an unhandled rejection that exits the whole proxy. Cut the connection
+      // instead, so the browser sees a failed response rather than a
+      // truncated one that reads as complete.
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
       json(res, 502, { error: "upstream_unreachable", message: (cause as Error).message });
     }
   });

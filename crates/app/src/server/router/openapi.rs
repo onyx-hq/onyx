@@ -77,7 +77,7 @@ pub async fn openapi_router() -> OpenApiRouter<IdeState> {
 
 /// Markdown rendered in the Swagger UI header, and carried as the spec's
 /// `info.description`. Documents both the HTTP API and the CLI tools
-/// (`oxy login`, `oxyc api`) that consume it; the body lives in `apidoc.md` so
+/// (`oxyc login`, `oxyc api`) that consume it; the body lives in `apidoc.md` so
 /// the long markdown stays out of the code.
 const APIDOC_DESCRIPTION: &str = include_str!("../../cli/commands/apidoc.md");
 
@@ -112,7 +112,7 @@ pub async fn build_openapi_doc() -> utoipa::openapi::OpenApi {
             DEFAULT_API_KEY_HEADER.to_string(),
         ))),
     );
-    // Bearer scheme — the JWT issued by `oxy login` (and returned by the
+    // Bearer scheme — the JWT issued by `oxyc login` (and returned by the
     // magic-link flow). Pass via `Authorization: Bearer <token>`.
     components.security_schemes.insert(
         "BearerAuth".to_string(),

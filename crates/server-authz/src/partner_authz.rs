@@ -84,7 +84,7 @@ pub enum PartnerCapability {
     ManageMembers,
     /// Publish / unpublish only — NOT data access.
     ManageApps,
-    /// The custom-app data plane (query / semantic-query / agent runs, oxy proxy).
+    /// The custom-app data plane (query / semantic-query / agent runs, oxyc proxy).
     DevelopApps,
     ViewAudit,
     ManageBilling,

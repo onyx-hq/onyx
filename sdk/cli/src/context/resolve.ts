@@ -23,7 +23,7 @@ import { dossierPath, isCloned, slugForDirectory } from "../customer/dossier.js"
 import { type Customer, customersOrg, resolveCustomer } from "../github/customers.js";
 import { authError, CliError, ExitCode } from "../util/errors.js";
 import { repoRoot } from "../util/git.js";
-import { loadManifest, type OxyAppManifest, type ResolvedEnv, resolveEnv } from "./target.js";
+import { loadForTargetResolution, type ResolvedEnv, resolveEnv } from "./target.js";
 
 /** Flags every command shares. Kept in one shape so `main.ts` wires them once. */
 export interface GlobalFlags {
@@ -42,7 +42,6 @@ export interface GlobalFlags {
 export interface Context {
   readonly cwd: string;
   readonly flags: GlobalFlags;
-  readonly manifest?: OxyAppManifest;
 
   /** The deployment to talk to. Throws when nothing resolves. */
   target(): string;
@@ -81,7 +80,6 @@ export interface Context {
  * never asks never touches the network or the disk at all.
  */
 export function createContext(flags: GlobalFlags, cwd = process.cwd()): Context {
-  const manifest = loadManifest(cwd);
   const memo = new Map<string, unknown>();
 
   const once = <T>(key: string, compute: () => T): T => {
@@ -91,6 +89,9 @@ export function createContext(flags: GlobalFlags, cwd = process.cwd()): Context 
 
   const env = (): ResolvedEnv =>
     once("env", () => {
+      // Read here rather than up front: a broken oxy-app.json is an error, and
+      // it must not fail a command that never resolves a target (`oxyc list`).
+      const manifest = loadForTargetResolution(cwd, flags.target);
       const resolved = resolveEnv(flags.env ?? "production", flags.target, manifest);
       if (!resolved) {
         throw new CliError(`could not resolve a target for --env ${flags.env}`, {
@@ -134,7 +135,6 @@ export function createContext(flags: GlobalFlags, cwd = process.cwd()): Context 
   return {
     cwd,
     flags,
-    manifest,
     env,
     // `target: undefined` on purpose: it overrides `--env`, so carrying it
     // would point every rebuilt context at one host — which is the opposite of

@@ -109,7 +109,7 @@ impl AppRuntimeConfig {
 /// Bundle subtrees the serve plane must never hand back as files.
 ///
 /// `functions/` holds the app's compiled Oxy Functions. They ship *inside* the
-/// same bundle as the frontend (`oxy publish` writes them to
+/// same bundle as the frontend (`oxyc publish` writes them to
 /// `<bundle>/functions/<name>.js`), but they are server-side handlers: the
 /// isolate loads them straight out of the build store via
 /// `custom_apps_functions`, never over HTTP. Nothing legitimate fetches them

@@ -23,7 +23,7 @@ pub const ROLE_ATTR: &str = "oxy.role";
 /// reaching into `oxy-app` — exact matches, no trimming, so the two never
 /// disagree about what `OXY_ROLE=" ide "` means: an explicit `OXY_ROLE` wins; otherwise `oxy worker`
 /// is a worker and `oxy serve` / `oxy start` are the all-in-one default. Any
-/// other command (`oxy publish`, `oxy run`) has no role.
+/// other command (`oxy run`, `oxy validate`) has no role.
 pub fn role_hint(subcommand: Option<&str>, oxy_role: Option<&str>) -> Option<&'static str> {
     match oxy_role {
         Some("ide") => return Some("ide"),

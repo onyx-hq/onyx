@@ -602,9 +602,9 @@ pub(crate) async fn serve_pretty(
                     None => {
                         // Post-retirement: the legacy state-dir serve is gone.
                         // An s3-source app with no build pointer hasn't been
-                        // published through the new pipeline yet (`oxy publish`).
+                        // published through the new pipeline yet (`oxyc publish`).
                         tracing::warn!(
-                            "app {id}: no build for {channel:?} channel — not yet published via `oxy publish`"
+                            "app {id}: no build for {channel:?} channel — not yet published via `oxyc publish`"
                         );
                         no_store_404()
                     }
@@ -633,7 +633,7 @@ pub(crate) async fn serve_pretty(
     // Two consequences worth knowing, because they cut opposite ways:
     //
     //   - **Gained.** An app that is registered but has nothing to serve —
-    //     no `oxy publish` yet, a `LocalFolder` path pointing nowhere, an
+    //     no `oxyc publish` yet, a `LocalFolder` path pointing nowhere, an
     //     S3 source not yet synced — stops recording a view for every hit
     //     on its 404. That is a state customers sit in, so it was real
     //     inflation.

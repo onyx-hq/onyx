@@ -22,13 +22,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
       - uses: actions/setup-node@v4
         with:
-          node-version: 26
-      - run: npm ci
-      - run: npm run build
-      # Install the Oxy CLI first if the runner doesn't have it (see the docs).
-      - run: oxy publish --env production
+          node-version: 20
+      # Builds per oxy-app.json (default: pnpm install, pnpm build), bundles any
+      # Oxy Functions, and publishes. Pin the @oxy-hq/cli version in a real workflow.
+      - run: npx --yes @oxy-hq/cli publish --env production
         env:
           OXY_TOKEN: \${{ secrets.OXY_TOKEN }}
 `;
@@ -56,9 +58,10 @@ export default function CiInstructions({ showTokenPath = true }: { showTokenPath
         <Method title='Trusted publishing' badge='Recommended' icon={ShieldCheck} defaultOpen>
           <p className='text-muted-foreground text-xs'>
             Run the generator in your app directory. It writes a workflow that mints a short-lived,
-            app-scoped credential via GitHub OIDC — nothing is stored in the repo.
+            app-scoped credential via GitHub OIDC — nothing is stored in the repo — and prints the
+            command that registers that workflow as the app&apos;s publisher.
           </p>
-          <CopyBlock label='Run locally' code='oxy init-ci --app <org-slug>/<app-slug>' oneLine />
+          <CopyBlock label='Run locally' code='oxyc init-ci --app <org-slug>/<app-slug>' oneLine />
           <p className='text-muted-foreground text-xs'>
             Then gate who can publish: add required reviewers to the{" "}
             <span className='font-mono'>oxy-publish</span> environment (Settings → Environments).

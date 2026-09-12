@@ -44,7 +44,7 @@ type Props = {
  *              iteration. (source: local)
  *   create  → "Register a new app." Local: oxy provisions a folder to
  *              build into. Cloud: just writes the app row — you ship
- *              builds afterwards with `oxy publish` (there is no CI).
+ *              builds afterwards with `oxyc publish` (there is no CI).
  *   other   → v0 / Vercel URL escape hatch, iframe-wrapped.
  *              Experimental — tucked behind the third option so the
  *              two-button common case stays clean.
@@ -99,7 +99,7 @@ export const CreateCustomAppDialog = ({ open, onOpenChange }: Props) => {
       // Local mode → "Link existing" is the operator's daily flow
       // (they already have a built folder on disk and just want oxy
       // to serve it). Cloud → default to "Create new" (register the
-      // row, then ship with `oxy publish`).
+      // row, then ship with `oxyc publish`).
       intent: isLocalMode ? "link" : "create",
       linkPath: "",
       v0Url: "",
@@ -353,9 +353,9 @@ const buildRequest = (
 
   // Create-new: branch on deployment mode.
   // Local → oxy mkdirs under $OXY_STATE_DIR and bakes the path back
-  // into the row (build into it, or `oxy publish --env local`).
+  // into the row (build into it, or `oxyc publish --env local`).
   // Cloud → just register the app row; bytes arrive later via
-  // `oxy publish`. No scaffold PR / CI — that pipeline is gone.
+  // `oxyc publish`. No scaffold PR / CI — that pipeline is gone.
   if (isLocalMode) {
     return {
       ...base,
@@ -401,8 +401,8 @@ const IntentPicker = ({ intent, onChange, linkEnabled, isLocalMode }: IntentPick
         title='Create new'
         description={
           isLocalMode
-            ? "Oxy provisions a folder; build in, or oxy publish."
-            : "Register the app, then ship with oxy publish."
+            ? "Oxy provisions a folder; build in, or oxyc publish."
+            : "Register the app, then ship with oxyc publish."
         }
       />
       <IntentCard
@@ -417,7 +417,7 @@ const IntentPicker = ({ intent, onChange, linkEnabled, isLocalMode }: IntentPick
       <strong className='font-medium text-foreground'>Link existing</strong> serves a folder on the
       oxy host directly (local iteration).{" "}
       <strong className='font-medium text-foreground'>Create new</strong> registers an app you ship
-      versioned builds to with <code className='font-mono'>oxy publish</code>.
+      versioned builds to with <code className='font-mono'>oxyc publish</code>.
     </p>
   </div>
 );
@@ -515,7 +515,7 @@ const IntentDetails = ({
               <p className='font-medium'>Oxy will create a folder for you.</p>
               <p className='mt-1 text-muted-foreground text-xs'>
                 Path appears in the Settings tab after creation. Build into it, or ship a versioned
-                build with <code className='font-mono'>oxy publish --env local</code>.
+                build with <code className='font-mono'>oxyc publish --env local</code>.
               </p>
             </div>
           </>
@@ -524,7 +524,7 @@ const IntentDetails = ({
             <p className='font-medium'>Oxy registers the app row.</p>
             <p className='mt-1 text-muted-foreground text-xs'>
               No bundle is uploaded here. Ship builds from your app directory with{" "}
-              <code className='font-mono'>oxy publish</code> — the commands appear after you create
+              <code className='font-mono'>oxyc publish</code> — the commands appear after you create
               it. There's no CI.
             </p>
           </div>
@@ -1025,7 +1025,7 @@ const NextSteps = ({ app }: { app: CustomApp }) => {
   return (
     <div className='flex flex-col gap-1.5'>
       <p className='font-medium'>
-        Next: ship a build with <code className='font-mono'>oxy publish</code>
+        Next: ship a build with <code className='font-mono'>oxyc publish</code>
       </p>
       <p className='text-muted-foreground text-xs'>
         The app is registered, so publish resolves the project automatically — no{" "}
@@ -1033,9 +1033,10 @@ const NextSteps = ({ app }: { app: CustomApp }) => {
       </p>
       <pre className='overflow-x-auto rounded bg-muted px-2 py-1.5 font-mono text-foreground text-xs'>
         {`# from your app dir — oxy-app.json: { "slug": "${app.slug}", "orgSlug": "${app.org_slug}" }
-oxy login --env production
-oxy publish --env production            # → draft
-oxy publish --env production --promote  # → live`}
+npm install -g @oxy-hq/cli               # once
+oxyc login --env production
+oxyc publish --env production            # → draft
+oxyc publish --env production --promote  # → live`}
       </pre>
       <p className='text-muted-foreground text-xs'>
         No app code yet? Scaffold one:{" "}

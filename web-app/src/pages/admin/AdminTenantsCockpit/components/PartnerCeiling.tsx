@@ -7,7 +7,7 @@ import type { AdminPartnerCapabilities } from "@/types/adminPartners";
 const HINTS: Record<keyof AdminPartnerCapabilities, string> = {
   manage_members: "invite / role / remove in client orgs",
   manage_apps: "publish and unpublish only — no data access",
-  develop_apps: "sensitive — query the client's data (app dev / oxy proxy)",
+  develop_apps: "sensitive — query the client's data (app dev / oxyc proxy)",
   view_audit: "read the subtree audit log",
   manage_billing: "sensitive — Global Owner only",
   manage_secrets: "sensitive — Global Owner only",

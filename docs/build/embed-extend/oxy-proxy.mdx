@@ -1,29 +1,35 @@
 ---
-title: "Local development with oxy proxy"
+title: "Local development with oxyc proxy"
 description: "Run a custom app on your machine against a real cloud Oxy's data, so you can verify you're getting the right results before you publish."
 ---
 
-When you build a **custom app** (a React/Vite bundle you ship with `oxy publish`),
+When you build a **custom app** (a React/Vite bundle you ship with `oxyc publish`),
 you usually want to run it locally with `pnpm dev` — but a local app has no Oxy
-identity, no auth, and no data. `oxy proxy` closes that gap: it lets your local
+identity, no auth, and no data. `oxyc proxy` closes that gap: it lets your local
 app call a **real cloud Oxy** and return real data, so you can confirm your
 queries, charts, and functions work *before* you publish.
 
 It's the same idea as `vercel dev` or Cloudflare's remote bindings: **your code
 runs locally, your data comes from the cloud.**
 
+`oxyc` is Oxy's command-line client. Install it once:
+
+```bash
+npm install -g @oxy-hq/cli
+```
+
 ## How it works
 
-`oxy proxy` starts a small local **proxy on port 3000** — exactly where a local
+`oxyc proxy` starts a small local **proxy on port 3000** — exactly where a local
 `oxy serve` would run. Your dev server keeps serving your app (with hot reload
 untouched) and forwards its Oxy calls to the proxy, which attaches your
-`oxy login` token and forwards them to the cloud environment you chose.
+`oxyc login` token and forwards them to the cloud environment you chose.
 
 ```text
   browser ──▶ pnpm dev (:5173, serves your app + hot reload)
                   │  Oxy calls ↓
                   ▼
-            oxy proxy (:3000)  ── adds your token ──▶  cloud (--env dev)
+            oxyc proxy (:3000)  ── adds your token ──▶  cloud (--env dev)
 ```
 
 Because the proxy sits on port 3000, the `@oxy-hq/vite-plugin` — whose default
@@ -31,7 +37,7 @@ Oxy target is already `localhost:3000` — needs **no configuration**. Your app
 just starts hitting cloud data.
 
 <Note>
-  Your token stays inside the `oxy proxy` process. It is added to requests
+  Your token stays inside the `oxyc proxy` process. It is added to requests
   server-side and is never exposed to browser JavaScript or written to a `.env`.
 </Note>
 
@@ -40,15 +46,15 @@ just starts hitting cloud data.
 <Steps>
   <Step title="Log in to the environment you want data from">
     ```bash
-    oxy login --env dev
+    oxyc login --env dev
     ```
-    This caches a token per environment (`dev`, `staging`, `production`). Use the
-    environment whose data you want to develop against.
+    This caches a token per environment (`dev`, `staging`, `production`, or a
+    deployment URL). Use the environment whose data you want to develop against.
   </Step>
   <Step title="Start the proxy">
     ```bash
-    # run from your custom app's repo (it reads oxy-app.json for the target)
-    oxy proxy --env dev
+    # run from your custom app's directory (it reads oxy-app.json for the target)
+    oxyc proxy --env dev
     ```
     You'll see a banner confirming the target and the active guardrails.
   </Step>
@@ -63,7 +69,7 @@ just starts hitting cloud data.
 
 ## What you can access
 
-`oxy proxy` forwards requests with **your own** `oxy login` token, so you can only
+`oxyc proxy` forwards requests with **your own** `oxyc login` token, so you can only
 reach data you're already allowed to see. Access to an app's data is granted if
 you are:
 
@@ -84,8 +90,8 @@ effects are off by default:
 | Behavior | Default | Opt in |
 | --- | --- | --- |
 | Usage/tracking events | **dropped** (won't pollute the target's analytics) | `--allow-events` |
-| Functions (`/fn`), agent runs, procedure runs | **held** — rejected with `409` until you opt in | `--allow-writes` |
-| Pointing at a production target | **blocked** | `--yes` |
+| Functions (`/fn`), agent runs, automation runs | **held** — rejected with `409` until you opt in | `--allow-writes` |
+| Pointing at a production host (anything on `oxygen-hq.com`, including an org's own subdomain) | **refused** | `--yes` |
 
 Reads — `query` and `semantic-query` — are always forwarded; those are what you
 need to "validate the data."
@@ -96,28 +102,47 @@ need to "validate the data."
   or `staging` env over `production`.
 </Warning>
 
+## Debugging a function call
+
+Every Oxy Function call through the proxy carries a trace — the one the SDK
+started, or one the proxy starts for it — and prints a line with the ids to look
+up when it fails:
+
+```text
+  ↳ 500 fn refresh  request_id=0f3c…  trace_id=4bf92f3577b34da6a3ce929d0e0e4736
+```
+
+Quote the `trace_id` when you ask for help. When the call came from
+`@oxy-hq/sdk`, it is also the `traceId` on the error your app received.
+
 ## Options
 
 | Flag | Description |
 | --- | --- |
-| `--env <name>` | Environment to resolve the target + token from (same as `oxy login --env`). Defaults to `production`. |
+| `--env <name\|url>` | Environment to resolve the target + token from (same as `oxyc login --env`): a name from `oxy-app.json` `environments`, `dev` / `staging` / `production`, or a deployment URL. Defaults to `production`. |
 | `--target <url>` | Explicit Oxy base URL; overrides `--env`. |
 | `--port <n>` | Local port (default **3000**). Change it if 3000 is taken — then point your dev server's Oxy proxy at the new port. |
 | `--allow-events` | Forward tracking events instead of dropping them. |
-| `--allow-writes` | Forward `/fn`, agent, and procedure calls instead of holding them. |
-| `--yes` | Confirm proxying to a production target. |
+| `--allow-writes` | Forward `/fn`, agent, and automation calls instead of holding them. |
+| `--yes` | Confirm proxying to a production host. |
+| `--token-env <var>` | Read the token from this environment variable instead of `OXY_TOKEN` (the cached login is the fallback). |
 
 ## Troubleshooting
 
-**`not authenticated for <target>`** — run `oxy login --env <env>` first (for the
-same environment you pass to `oxy proxy`).
+**`no cached token for <target>`** — the proxy still starts, but only requests that
+carry their own sign-in will work. Run `oxyc login --env <env>` for the same
+environment you pass to `oxyc proxy`.
 
-**`could not bind 127.0.0.1:3000`** — something is already on port 3000 (often a
-local `oxy serve`). Stop it, or run `oxy proxy --port <n>` and point your dev
+**`port 3000 is already in use`** — something is already on port 3000 (often a
+local `oxy serve`). Stop it, or run `oxyc proxy --port <n>` and point your dev
 server's Oxy proxy at that port.
 
-**`side-effecting call held`** — your app called a function / agent / procedure.
-Re-run with `--allow-writes` if you intend those to execute against the target.
+**`refusing to proxy to a production target`** — the target is a production host.
+Pass `--yes` if that is really what you want, or use `--env dev`.
+
+**`409` with `held_by_oxyc_proxy`** — your app called a function / agent /
+automation. Re-run with `--allow-writes` if you intend those to execute against
+the target.
 
 **Empty or `403` responses** — you may not be authorized for the app's
 organization. Confirm you're a member, an app-admin, or a partner admin with

@@ -1,5 +1,5 @@
 //! Adds `app_builds.published_by` — the user (app-admin) who ran the
-//! `oxy publish` that created the build. Powers the "who deployed" audit in
+//! `oxyc publish` that created the build. Powers the "who deployed" audit in
 //! the customer-apps admin console, recovering the trail CI logs used to give
 //! us now that engineers publish directly.
 //!

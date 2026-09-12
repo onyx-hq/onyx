@@ -65,12 +65,13 @@ bundle root — never hardcode the base path. Replace `public/icon.svg` and
 ## Deploying
 
 ```bash
-oxy login   --env production    # once per env; caches a token
-oxy publish --env production    # build + ship to the draft channel
-oxy publish --env production --promote   # …straight to live
+npm install -g @oxy-hq/cli       # once; installs oxyc
+oxyc login   --env production    # once per env; caches a token
+oxyc publish --env production    # build + ship to the draft channel
+oxyc publish --env production --promote   # …straight to live
 ```
 
-`oxy publish` reads `oxy-app.json`, runs the build into `out/`, resolves the
+`oxyc publish` reads `oxy-app.json`, runs the build into `out/`, resolves the
 target org + project, and uploads the bundle. No CI required and no project id
 in git.
 

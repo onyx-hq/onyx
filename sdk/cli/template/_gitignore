@@ -15,7 +15,7 @@
 # committed.
 node_modules/
 
-# Build output. `out/` is oxy publish's default outDir; `dist/` and `build/`
+# Build output. `out/` is oxyc publish's default outDir; `dist/` and `build/`
 # are what a Vite or Next app writes when its oxy-app.json names one instead.
 out/
 dist/

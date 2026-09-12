@@ -20,7 +20,7 @@ pub struct Model {
     pub manage_members: bool,
     /// Publish / unpublish only — NOT data access.
     pub manage_apps: bool,
-    /// The custom-app DATA PLANE (query / semantic-query / agent runs, oxy proxy).
+    /// The custom-app DATA PLANE (query / semantic-query / agent runs, oxyc proxy).
     /// Off by default: shipping an app is not the same as reading the warehouse.
     pub develop_apps: bool,
     pub view_audit: bool,

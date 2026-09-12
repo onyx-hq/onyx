@@ -1,4 +1,4 @@
-# Build and publish __NAME__'s custom apps with `oxy publish`.
+# Build and publish __NAME__'s custom apps with `oxyc publish`.
 #
 # On day one this repo has no apps, and this workflow is a deliberate no-op:
 # discovery finds nothing, every later step is skipped, the publish JOB is
@@ -14,7 +14,7 @@
 # compiles every bundle, needs no credential to do it, and so still catches a
 # bundle that stopped building before anyone ships it by hand — and the publish
 # JOB is skipped, green, with a notice naming the self-serve command
-# (`oxy login --env <env>`, then `oxy publish --env <env>`). That is how the
+# (`oxyc login --env <env>`, then `oxyc publish --env <env>`). That is how the
 # rest of this org already ships: `customer-apps`, Oxy's own monorepo of custom
 # apps, deleted its publish CI and its engineers publish from their laptops. A
 # scaffolded repo should behave like that on day one rather than arriving with a
@@ -32,7 +32,7 @@
 # Deliberately NOT modelled on pokehouse-oxy's `franchise-report-app.yml`
 # (Docker -> ECR -> ArgoCD). That is the only real, green CI on disk in this
 # org, which is exactly what makes it tempting; it is a legacy path for the
-# one app still on Next.js and has nothing to do with `oxy publish`.
+# one app still on Next.js and has nothing to do with `oxyc publish`.
 #
 # Auth is a static `OXY_TOKEN` secret, not GitHub OIDC trusted publishing.
 # Both appear in this org's examples and a workflow that MIXES them 403s.
@@ -43,13 +43,14 @@
 # `build` runs the bundles' own postinstall and build scripts — arbitrary
 # third-party code out of node_modules — and holds no publish credential.
 # `publish` holds `OXY_TOKEN`, downloads what `build` produced, and runs no
-# package script at all: `oxy publish --dir` is documented as "skip the build
-# and publish this pre-built directory as-is", so the credential and the
-# untrusted code are never in the same job, on the same runner, at the same
+# package script at all. That includes Oxy Functions: `build` bundles them with
+# `oxyc publish --build-only`, and `publish` runs `oxyc publish --prebuilt`,
+# which checks they arrived rather than running esbuild — so the credential and
+# the untrusted code are never in the same job, on the same runner, at the same
 # time.
 #
 # TWO ENVIRONMENTS, and `--env` is passed EXPLICITLY on every publish. This is
-# not tidiness either: `oxy publish` defaults `--env` to **production**, so the
+# not tidiness either: `oxyc publish` defaults `--env` to **production**, so the
 # earlier version of this workflow — which passed no `--env` at all — published
 # every push to main straight at the customer's live environment. Only ever as
 # a draft, so nothing went live, but into the wrong environment, and dev/prod
@@ -79,8 +80,8 @@ name: publish
 on:
   push:
     branches: [main]
-    # Without this filter every README edit would download a ~657 MB CLI to
-    # publish nothing. `workflow_dispatch` has no path filter, so the no-op
+    # Without this filter every README edit would install and build every app
+    # to publish nothing. `workflow_dispatch` has no path filter, so the no-op
     # path is still reachable by hand on a repo with no apps.
     paths:
       - "apps/**"
@@ -114,8 +115,7 @@ on:
     inputs:
       ref:
         # Explicit, and required, because of what Promote below actually
-        # does. There is no promote-an-existing-build command in this CLI —
-        # `oxy apps` offers show/create/list/delete and nothing else — so
+        # does. There is no promote-an-existing-build command in this CLI, so
         # "promote" can only mean "build this ref again and publish it live".
         # Leaving the ref implicit would let an operator who reviewed a draft
         # yesterday ship whatever landed on main since, believing they were
@@ -137,17 +137,11 @@ permissions:
   contents: read
 
 env:
-  # The same pin as validate.yaml, and it must stay the same: two pins in one
-  # repo drift, and the one nobody looks at is the one that breaks. Bump both
-  # together, after re-running the sequence. customer-tooling's own suite has
-  # a test that fails when they diverge, so this is enforced, not hoped for.
-  #
-  # This pin is also load-bearing for `--build-id`. Run-unique build ids
-  # arrived in 0.5.121; an older CLI defaults to a bare `$GITHUB_SHA`, which
-  # collides on a re-run or a promote and is rejected with HTTP 409. The
-  # publish step passes `--build-id` explicitly, so an older CLI would still
-  # work — the pin is the belt to that pair of braces.
-  OXY_VERSION: "0.5.126"
+  # The `@oxy-hq/cli` (`oxyc`) both jobs install, exactly. Its own pin, not
+  # validate.yaml's `OXY_VERSION`: that one is the Rust `oxy` that validates the
+  # workspace, a different tool on a different release line. `--build-only` and
+  # `--prebuilt`, which the two jobs below depend on, arrived in 0.4.0.
+  OXYC_VERSION: "0.4.0"
 
 jobs:
   build:
@@ -205,7 +199,7 @@ jobs:
           # keeps printf's own exit status, so a failing script inside the
           # substitution would be swallowed and this step would write an EMPTY
           # environment name — which downstream would read as "no environment"
-          # and, without the guard in the publish job, as `oxy publish`'s own
+          # and, without the guard in the publish job, as `oxyc publish`'s own
           # production default. An assignment carries the substitution's
           # status, so errexit catches it here.
           name="$(bash .github/scripts/publish-env.sh)"
@@ -248,7 +242,7 @@ jobs:
           # the dropdown alone builds the right code while GITHUB_SHA names
           # main's HEAD: the build id and the notice below would both be
           # confidently wrong, which is worse than vague. `git rev-parse HEAD`
-          # is also exactly what `oxy publish` records as the build's source
+          # is also exactly what `oxyc publish` records as the build's source
           # commit, so the two agree by construction.
           sha="$(git rev-parse HEAD)"
           printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
@@ -309,6 +303,27 @@ jobs:
         # exists and is non-empty before anything is uploaded.
         run: pnpm -r build
 
+      - name: Bundle each app's Oxy Functions
+        if: steps.discover.outputs.count != '0'
+        # HERE, in the job with no credential, because bundling runs the app's
+        # own esbuild out of node_modules. `--build-only --dir` skips the build
+        # that just ran, checks `functions/` is not holding frontend output, and
+        # writes `functions/<name>.js` into the out dir for every function the
+        # manifest declares — a no-op for an app that declares none. The publish
+        # job then checks they arrived instead of bundling again.
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/oxyc" --no-audit --no-fund "@oxy-hq/cli@$OXYC_VERSION"
+          oxyc="$RUNNER_TEMP/oxyc/node_modules/.bin/oxyc"
+          status=0
+          while IFS="$(printf '\t')" read -r app_dir out; do
+            [ -n "$app_dir" ] || continue
+            echo "::group::oxyc publish --build-only $app_dir"
+            ( cd "$app_dir" && "$oxyc" publish --build-only --dir "$out" ) || status=1
+            echo "::endgroup::"
+          done < "$RUNNER_TEMP/apps.tsv"
+          exit "$status"
+
       - name: Stage the built bundles for the publish job
         if: steps.discover.outputs.count != '0'
         run: |
@@ -365,13 +380,13 @@ jobs:
           retention-days: 1
 
   publish:
-    name: oxy publish
+    name: oxyc publish
     runs-on: ubuntu-latest
     needs: build
     # Two gates, and they answer different questions. The first: does this repo
     # publish from CI at all? Absent `vars.OXY_CI_PUBLISH` it does not, and this
     # job is skipped with the notice the build job printed — the bundles were
-    # still built, and shipping them is `oxy publish`, run by a person. The
+    # still built, and shipping them is `oxyc publish`, run by a person. The
     # second: day one, or any repo with no apps, where discovery found nothing.
     # Either way a SKIP, which is green, not red, and does not prompt for
     # whatever approval the environment below may require.
@@ -387,7 +402,7 @@ jobs:
     if: needs.build.outputs.ci-publish == 'on' && needs.build.outputs.count != '0'
 
     # The gate, and the credential boundary. `dev` on a push, `production` on
-    # a manual dispatch — the SAME string this job passes to `oxy publish
+    # a manual dispatch — the SAME string this job passes to `oxyc publish
     # --env` below, resolved once in `build`, so the destination this job
     # publishes to and the environment it draws its secrets from are the same
     # thing by construction. Each environment holds its own `OXY_TOKEN`, and a
@@ -432,7 +447,7 @@ jobs:
         run: |
           set -euo pipefail
           # Put each bundle back exactly where the build left it, so
-          # `oxy publish` sees the tree it would have seen in a single job:
+          # `oxyc publish` sees the tree it would have seen in a single job:
           # oxy-app.json beside its own build output, git provenance intact.
           # Nothing is executed to do this — it is a copy.
           staging="$RUNNER_TEMP/bundles"
@@ -446,72 +461,45 @@ jobs:
             cp -R "$staging/$app_dir/$out/." "$app_dir/$out/"
           done < "$staging/apps.tsv"
 
-      - name: Install the pinned oxy CLI
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install the pinned oxyc CLI
+        env:
+          # This job holds the publish credential (step-scoped, below), so the
+          # CLI's own dependencies run no install scripts here.
+          npm_config_ignore_scripts: "true"
         run: |
           set -euo pipefail
-          # NOT `bash <(curl ...)`, the form the docs use: process
-          # substitution hands bash an empty file when the download fails,
-          # and bash then exits 0 — a step that reports "installed" having
-          # installed nothing. Download to a file first so curl's own -f
-          # failure is the step's.
-          curl -sSfL https://get.oxy.tech -o "$RUNNER_TEMP/get-oxy.sh"
-          OXY_VERSION="$OXY_VERSION" bash "$RUNNER_TEMP/get-oxy.sh"
+          # Into a prefix of its own rather than -g: nothing else on the
+          # runner's global npm is in play, and the path below is exact.
+          npm install --prefix "$RUNNER_TEMP/oxyc" --no-audit --no-fund "@oxy-hq/cli@$OXYC_VERSION"
+          echo "$RUNNER_TEMP/oxyc/node_modules/.bin" >> "$GITHUB_PATH"
 
-          # And check the installer left something behind: it downloads the
-          # binary with `curl -L` (no -f) and exits 0 regardless.
-          if [ ! -x "$HOME/.local/bin/oxy" ]; then
-            echo "::error::the installer exited 0 but left no executable at $HOME/.local/bin/oxy." >&2
-            exit 1
-          fi
-
-          # The installer drops the binary in ~/.local/bin for a non-root
-          # user and edits shell rc files, which a GitHub step never reads.
-          # Put it on PATH explicitly instead of hoping.
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Verify the oxy CLI
+      - name: Verify the oxyc CLI
         run: |
           set -euo pipefail
-          # The same guard validate.yaml runs, on purpose: one guard with one
-          # set of failure modes, not two that drift. Two silent failures
-          # make it load-bearing:
-          #   1. the installer runs `curl -L` WITHOUT -f, so a tag that does
-          #      not exist writes GitHub's 404 HTML page to the binary path,
-          #      chmod +x's it, and still exits 0;
-          #   2. this CLI falls through to `--help` with exit 0 on a
-          #      subcommand it does not have, so an old binary "succeeds" at
-          #      doing nothing.
-          if ! raw="$(oxy --version 2>&1)"; then
-            echo "::error::'oxy --version' failed — the installed binary is not runnable." >&2
-            printf '%s\n' "$raw" >&2
+          # Exact, not a floor: npm installed exactly the pin, so anything else
+          # means PATH found a different oxyc first.
+          have="$(oxyc --version)"
+          if [ "$have" != "$OXYC_VERSION" ]; then
+            echo "::error::oxyc $have is on PATH, not the pinned $OXYC_VERSION." >&2
             exit 1
           fi
-
-          have="$(printf '%s\n' "$raw" | sed -n 's/^oxy-app version: \([0-9][0-9.]*\).*/\1/p' | head -1)"
-          if [ -z "$have" ]; then
-            echo "::error::could not read a version out of 'oxy --version' — the install probably wrote a 404 page." >&2
-            printf '%s\n' "$raw" >&2
-            exit 1
-          fi
-
-          oldest="$(printf '%s\n%s\n' "$OXY_VERSION" "$have" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)"
-          if [ "$oldest" != "$OXY_VERSION" ]; then
-            echo "::error::oxy $have is older than the pinned $OXY_VERSION." >&2
-            exit 1
-          fi
-
-          echo "oxy $have (pin $OXY_VERSION)"
+          echo "oxyc $have (pin $OXYC_VERSION)"
 
       - name: Publish each bundle
         env:
           # Step-scoped as well as job-isolated. The job split is what keeps
           # this token away from the bundles' own build scripts — those ran
           # in `build`, on a different runner, and nothing in THIS job runs a
-          # package script (`oxy publish --dir` publishes a pre-built
-          # directory as-is rather than running the manifest's build). The
-          # step scope is the cheap second layer: it keeps the token out of
-          # the environment of the install and verify steps above, which
-          # execute a downloaded shell script.
+          # package script (`oxyc publish --prebuilt --dir` publishes the
+          # directory as built, functions included, rather than running the
+          # manifest's build or esbuild). The step scope is the cheap second
+          # layer: it keeps the token out of the environment of the install
+          # and verify steps above, which run code fetched from npm.
           # Resolved against the ENVIRONMENT named above, where `dev` and
           # `production` each hold their own.
           #
@@ -531,7 +519,7 @@ jobs:
           # repository-level `OXY_TOKEN` after adding the environment ones.
           OXY_TOKEN: ${{ secrets.OXY_TOKEN }}
           # `dev` or `production`, resolved once in the build job. Passed to
-          # `oxy publish --env` below; the identical string selected the
+          # `oxyc publish --env` below; the identical string selected the
           # environment this job is running in.
           PUBLISH_ENV: ${{ needs.build.outputs.publish-env }}
           # Optional, and it OVERRIDES `--env` rather than refining it (the
@@ -553,7 +541,7 @@ jobs:
           set -euo pipefail
 
           # Fail closed on the environment before anything else. An empty
-          # PUBLISH_ENV would mean `oxy publish` fell back to its own default
+          # PUBLISH_ENV would mean `oxyc publish` fell back to its own default
           # — production — while every log line here said nothing at all, and
           # that silent fallback is the whole bug this workflow was fixed for.
           # It can only be empty if the build job's resolution step was
@@ -615,8 +603,12 @@ jobs:
             # publishes at the customer's live environment. It is the FIRST
             # argument for the same reason: anything appended below is a
             # refinement of a destination that has already been named.
-            args=(--env "$PUBLISH_ENV" --dir "$out" --build-id "$build_id")
-            # --org/--app/--project are deliberately absent: oxy publish
+            args=(--env "$PUBLISH_ENV" --dir "$out" --prebuilt --build-id "$build_id")
+            # `--prebuilt`: the build job bundled this app's functions into the
+            # out dir. The CLI refuses when a declared one did not arrive,
+            # rather than publishing a bundle whose function 404s at runtime.
+            #
+            # --org/--app/--project are deliberately absent: oxyc publish
             # reads the app's identity from the oxy-app.json in this
             # directory (discovery has already checked it is there and
             # complete) and resolves the project from the target's
@@ -629,8 +621,8 @@ jobs:
             # default — this workflow is not overriding platform behaviour.
             #
             # `--promote` publishes THIS build straight to live. It does not
-            # promote a build that already exists: nothing in this CLI can
-            # (`oxy apps` is show/create/list/delete). So the run rebuilt the
+            # promote a build that already exists: nothing in this CLI can.
+            # So the run rebuilt the
             # ref the operator named and is shipping that, under a new build
             # id — said out loud above, because "promote" invites the other
             # reading and the difference is a wrong version in front of
@@ -639,11 +631,11 @@ jobs:
               args+=(--promote)
             fi
 
-            echo "::group::oxy publish $app_dir"
+            echo "::group::oxyc publish $app_dir"
             # A subshell so the cd cannot leak into the next iteration.
-            # oxy publish reads oxy-app.json, resolves --dir, and captures
+            # oxyc publish reads oxy-app.json, resolves --dir, and captures
             # git provenance relative to its working directory.
-            ( cd "$app_dir" && oxy publish "${args[@]}" ) || status=1
+            ( cd "$app_dir" && oxyc publish "${args[@]}" ) || status=1
             echo "::endgroup::"
           done < "$RUNNER_TEMP/bundles/apps.tsv"
 

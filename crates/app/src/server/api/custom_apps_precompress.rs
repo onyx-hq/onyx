@@ -46,7 +46,7 @@ pub const PRECOMPRESSED_SUFFIX: &str = ".br";
 const MIN_PRECOMPRESS_BYTES: usize = 1024;
 
 /// Brotli quality. Publish-time cost, serve-time benefit — but q11 is
-/// 5-10x slower than q9 for ~2% more compression, and `oxy publish` is an
+/// 5-10x slower than q9 for ~2% more compression, and `oxyc publish` is an
 /// interactive command an engineer waits on. q9 is the knob to raise if
 /// bundle transfer size ever matters more than publish latency.
 const BROTLI_QUALITY: i32 = 9;
@@ -192,7 +192,7 @@ fn compress(bytes: &[u8]) -> Option<Vec<u8>> {
 /// inside `spawn_blocking`, never on a Tokio worker.
 ///
 /// Fanned out with rayon because this is the cost an engineer waits on at
-/// `oxy publish`. Files compress independently, so the work is embarrassingly
+/// `oxyc publish`. Files compress independently, so the work is embarrassingly
 /// parallel; parallelising it is most of what buys back the headroom that
 /// [`BROTLI_QUALITY`] spends. Output order is not meaningful — the caller
 /// appends these to a file list that the store writes key by key.

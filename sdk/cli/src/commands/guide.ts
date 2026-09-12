@@ -109,6 +109,7 @@ tokens than the same rows as JSON, which repeats every field name per row.
 
     oxyc validate                  # check the workspace YAML — no network, no token
     oxyc proxy --env dev           # local app dev against cloud data
+    oxyc publish --env dev         # build + publish a custom app (draft; --promote for live)
     oxyc <customer>                # a session scoped to one customer
     oxyc doctor <customer>         # what the tool knows, changing nothing
     oxyc assume status             # a staff 403 usually means no session, not a role

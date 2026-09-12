@@ -254,7 +254,7 @@ migrate:
 #
 # End-to-end smoke for the self-serve publish pipeline against a local
 # `oxy serve` using the FILESYSTEM build store (no S3/MinIO). Publishes a
-# pre-built bundle via `oxy publish`, then fetches the served URL and checks
+# pre-built bundle via `oxyc publish`, then fetches the served URL and checks
 # HTML came back. Exit 0 = green; any failure aborts immediately.
 #
 # Usage:
@@ -266,11 +266,12 @@ migrate:
 #         cdba75a2-c074-4dfa-a77c-a505b2845944
 #
 # Prerequisites (one-time):
-#   - `cargo build -p oxy-server`  (provides ./target/debug/oxy)
+#   - `cargo build -p oxy-server`  (provides ./target/debug/oxy, for `oxy serve`)
+#   - `pnpm --dir sdk/cli build`   (provides sdk/cli/dist/main.mjs, the oxyc that publishes)
 #   - A local `oxy serve` running WITHOUT OXY_CUSTOMER_APPS_S3_BUCKET set, so
 #     builds land in the state dir, e.g.:
 #         OXY_STATE_DIR="$HOME/.local/share/oxy" ./target/debug/oxy serve
-#   - Logged in as an app-admin: `./target/debug/oxy login --env local`
+#   - Logged in as an app-admin: `node sdk/cli/dist/main.mjs login --env local`
 #     (or export OXY_TOKEN=<app-admin api key>)
 #   - A real project UUID in your local oxy DB (passed as <project-id> — the
 #     app may be new, so build-config can't resolve it yet)
@@ -281,23 +282,23 @@ test-customer-apps-publish org slug bundle project_id:
     set -euo pipefail
 
     TARGET="${OXY_TARGET:-http://localhost:3000}"
-    CREDS="${XDG_CONFIG_HOME:-$HOME/.config}/oxy/credentials.json"
+    OXYC="node sdk/cli/dist/main.mjs"
 
     if [ ! -f "{{ bundle }}/index.html" ]; then
         echo "ERROR: {{ bundle }}/index.html missing — every bundle must have one" >&2
         exit 1
     fi
-    if [ ! -x "./target/debug/oxy" ]; then
-        echo "ERROR: ./target/debug/oxy missing — run 'cargo build -p oxy-server' first" >&2
+    if [ ! -f "sdk/cli/dist/main.mjs" ]; then
+        echo "ERROR: sdk/cli/dist/main.mjs missing — run 'pnpm --dir sdk/cli build' first" >&2
         exit 1
     fi
 
-    # Token: OXY_TOKEN, else the `oxy login` cache for this host.
-    HOSTKEY="$(echo "$TARGET" | sed -E 's#^https?://##; s#/$##')"
-    TOKEN="${OXY_TOKEN:-$(jq -r --arg h "$HOSTKEY" '.[$h].token // empty' "$CREDS" 2>/dev/null || true)}"
+    # Token: OXY_TOKEN, else the `oxyc login` cache for this host — asked of
+    # oxyc, which knows where that file lives on this OS (not ~/.config on macOS).
+    TOKEN="${OXY_TOKEN:-$($OXYC token --target "$TARGET" 2>/dev/null || true)}"
     if [ -z "$TOKEN" ]; then
         echo "ERROR: not authenticated for $TARGET." >&2
-        echo "       Run: ./target/debug/oxy login --env local   (or export OXY_TOKEN=<app-admin key>)" >&2
+        echo "       Run: node sdk/cli/dist/main.mjs login --env local   (or export OXY_TOKEN=<app-admin key>)" >&2
         exit 1
     fi
 
@@ -309,7 +310,7 @@ test-customer-apps-publish org slug bundle project_id:
     fi
 
     echo "==> [1/2] Publishing {{ org }}/{{ slug }} → $TARGET (filesystem build store, live channel)…"
-    ./target/debug/oxy publish \
+    $OXYC publish \
         --target "$TARGET" \
         --org {{ org }} \
         --app {{ slug }} \

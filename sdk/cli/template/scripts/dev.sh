@@ -6,9 +6,9 @@
 # why this file exists at all. Before it, running an app locally needed three
 # commands in two terminals and knowledge that was written down nowhere:
 #
-#   oxy proxy --env <env>     background, listens on :3000. Forwards the app's
+#   oxyc proxy --env <env>    background, listens on :3000. Forwards the app's
 #                             /api calls to the cloud, signed with the token
-#                             `oxy login --env <env>` cached.
+#                             `oxyc login --env <env>` cached.
 #   pnpm dev  (in the app)    foreground, Vite on :5173, which proxies /api to
 #                             :3000. That target is the Vite plugin's default,
 #                             so the proxy's port is not really negotiable —
@@ -36,7 +36,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # that also uses it looks for it.
 DISCOVER="$root/.github/scripts/discover-apps.sh"
 
-# `oxy proxy`'s own default, and what @oxy-hq/vite-plugin proxies /api to.
+# `oxyc proxy`'s own default, and what @oxy-hq/vite-plugin proxies /api to.
 PROXY_PORT=3000
 # Vite's default. Printed, never bound by this script.
 DEV_PORT=5173
@@ -60,7 +60,7 @@ Run one of this repo's custom apps locally, against a cloud oxy's real data.
   pnpm dev --env <env> [app] [--allow-writes] [--allow-events] [--yes]
 
   --env <env>     REQUIRED. Which oxy to proxy to. There is deliberately no
-                  default: \`oxy proxy\`'s own default is production, and a
+                  default: \`oxyc proxy\`'s own default is production, and a
                   \`pnpm dev\` that silently reads production is not something
                   this repo will do. One of:
                     dev  staging  production
@@ -73,7 +73,7 @@ Run one of this repo's custom apps locally, against a cloud oxy's real data.
   --yes           Confirm that --env production is really what you meant.
   -h, --help      This text.
 
-First run, once per env:  oxy login --env <env>
+First run, once per env:  oxyc login --env <env>
 EOF
 }
 
@@ -315,13 +315,13 @@ if [ -z "$env_name" ]; then
       "a full URL (--env https://acme.oxygen-hq.com), or a name the app's" \
       "oxy-app.json declares under \"environments\"." \
       "" \
-      "There is no default on purpose. 'oxy proxy' defaults to PRODUCTION, and" \
+      "There is no default on purpose. 'oxyc proxy' defaults to PRODUCTION, and" \
       "a 'pnpm dev' that silently serves production data is not a thing this" \
       "repo will do quietly."
 fi
 
 if [ "$env_name" = "production" ] && [ "$confirm_yes" -ne 1 ]; then
-  # `oxy proxy` refuses a production target without --yes on its own. Catching
+  # `oxyc proxy` refuses a production target without --yes on its own. Catching
   # it here matters because the proxy runs in the BACKGROUND: its refusal (or
   # its prompt) would scroll past under Vite's banner, and the app would just
   # fail every request with nothing on screen explaining why.
@@ -335,12 +335,13 @@ fi
 
 # --- preconditions ----------------------------------------------------------
 
-if ! command -v oxy >/dev/null 2>&1; then
-  die "the 'oxy' CLI is not on your PATH, and the proxy is oxy." \
+if ! command -v oxyc >/dev/null 2>&1; then
+  die "the 'oxyc' CLI is not on your PATH, and the proxy is oxyc." \
       "" \
-      "  curl -sSfL https://get.oxy.tech | bash" \
+      "  npm install -g @oxy-hq/cli" \
       "" \
-      "It installs to ~/.local/bin; add that to PATH if it is not already there."
+      "A global install, not npx: the proxy is killed by pid on Ctrl-C, and a" \
+      "wrapper process in between would keep the signal from reaching it."
 fi
 
 if ! command -v pnpm >/dev/null 2>&1; then
@@ -371,7 +372,7 @@ read_port_holder "$PROXY_PORT"
 if [ -n "$port_holder" ]; then
   die "port $PROXY_PORT is already taken by: $port_holder" \
       "" \
-      "'oxy proxy' has to listen there — the app's dev server proxies /api to" \
+      "'oxyc proxy' has to listen there — the app's dev server proxies /api to" \
       "that exact port — so this cannot just move out of the way. Usually it is" \
       "a proxy from an earlier run that outlived its terminal, or a local" \
       "'oxy serve'. Stop it and try again:" \
@@ -389,7 +390,7 @@ if [ "$confirm_yes" -eq 1 ]; then proxy_args+=(--yes); fi
 say "" \
     "  app     $app_dir" \
     "  env     $env_name" \
-    "  proxy   oxy ${proxy_args[*]}   ->  http://localhost:$PROXY_PORT" \
+    "  proxy   oxyc ${proxy_args[*]}   ->  http://localhost:$PROXY_PORT" \
     "  dev     pnpm dev in $app_dir   ->  http://localhost:$DEV_PORT" \
     ""
 
@@ -410,23 +411,26 @@ else
   say "  Tracking events are DROPPED, so local clicking never shows up in the" \
       "  customer's analytics. Pass --allow-events to forward them."
 fi
-say "" "  Ctrl-C stops both. If requests come back 401, run: oxy login --env $env_name" ""
+say "" "  Ctrl-C stops both. If requests come back 401, run: oxyc login --env $env_name" ""
 
-oxy "${proxy_args[@]}" &
+oxyc "${proxy_args[@]}" &
 proxy_pid=$!
 
-# A proxy that dies on the first second — no cached token, a bad --env — would
+# A proxy that dies on the first second — a bad --env, a production host
+# without --yes — would
 # otherwise leave Vite up and every request failing, with the reason scrolled
 # off the top. One second is enough to catch the immediate exits and cannot
 # produce a false alarm: a proxy still running after it is simply left alone.
 sleep 1
 if process_finished "$proxy_pid"; then
   proxy_pid=""
-  die "'oxy proxy --env $env_name' exited immediately — see its output above." \
+  die "'oxyc proxy --env $env_name' exited immediately — see its output above." \
       "" \
-      "Most often there is no cached token for that env yet:" \
+      "Most often --env did not resolve to a deployment, or it names a" \
+      "production host (an org URL under oxygen-hq.com) and needs --yes." \
+      "If it did start but every request is a 401, cache a token for it:" \
       "" \
-      "  oxy login --env $env_name"
+      "  oxyc login --env $env_name"
 fi
 
 # The dev server, in the foreground, and the LAST statement in this file.

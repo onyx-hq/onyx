@@ -564,7 +564,7 @@ const getCloudRouter = (authConfig: AuthConfigResponse) =>
         {/* Invitation accept — public; the page itself redirects to /login if needed */}
         <Route path='/invite/:token' element={<InvitePage />} />
 
-        {/* `oxy login` browser handoff — public; reads the session token and
+        {/* `oxyc login` browser handoff — public; reads the session token and
             hands it to the CLI's loopback listener, bouncing through /login
             first when not yet signed in. */}
         <Route path='/cli-auth' element={<CliAuth />} />

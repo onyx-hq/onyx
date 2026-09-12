@@ -480,7 +480,7 @@ pub struct RegisterPublisherBody {
     /// it from the org's GitHub settings (or the API); we never accept just a name.
     pub repo_owner_id: i64,
     pub repo_name: String,
-    /// Default ".github/workflows/oxy-publish.yml" — what `oxy init-ci` generates.
+    /// Default ".github/workflows/oxy-publish.yml" — what `oxyc init-ci` generates.
     pub workflow_ref: String,
     /// Required — the environment the publish job runs in, so it can be gated
     /// behind required-reviewers.

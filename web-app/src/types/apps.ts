@@ -174,7 +174,7 @@ export interface AppBuild {
   /** Email of the app-admin who published this build. Null for builds
    * created before publisher tracking, or via legacy paths. */
   published_by_email?: string | null;
-  /** Git provenance captured by `oxy publish`. All null for legacy /
+  /** Git provenance captured by `oxyc publish`. All null for legacy /
    * non-git builds. `source_repo` is the raw remote URL — the UI normalizes
    * it to a GitHub link against `commit_sha`. */
   source_repo?: string | null;

@@ -8,7 +8,7 @@
 # unexecuted.
 #
 # It also has exactly one caller and one answer ON PURPOSE. The name printed
-# here is used TWICE by publish.yaml — as `oxy publish --env <name>` and as the
+# here is used TWICE by publish.yaml — as `oxyc publish --env <name>` and as the
 # GitHub Actions `environment:` whose secrets that publish authenticates with —
 # and those two must never disagree. Two ternaries in the YAML would have been
 # shorter and would have drifted the first time one of them was edited; one
@@ -21,7 +21,7 @@
 #   exit 0    only for a trigger this repo has a mapping for.
 #   exit 1    for anything else, INCLUDING an empty trigger.
 #
-# The refusal is the point. `oxy publish` defaults `--env` to **production**,
+# The refusal is the point. `oxyc publish` defaults `--env` to **production**,
 # so a workflow that omits the flag ships a customer's live environment while
 # looking like it did nothing in particular — which is exactly what this repo's
 # CI did before this file existed. Every publish now names its environment out
@@ -48,7 +48,7 @@ case "$trigger" in
     exit 1
     ;;
   *)
-    printf '::error::this repo publishes on "push" and "workflow_dispatch" only, and has no oxy environment mapped for "%s". Add one to .github/scripts/publish-env.sh — deliberately, because the alternative is a trigger nobody reviewed publishing to production, which is what "oxy publish" does when nothing names an environment.\n' \
+    printf '::error::this repo publishes on "push" and "workflow_dispatch" only, and has no oxy environment mapped for "%s". Add one to .github/scripts/publish-env.sh — deliberately, because the alternative is a trigger nobody reviewed publishing to production, which is what "oxyc publish" does when nothing names an environment.\n' \
       "$trigger" >&2
     exit 1
     ;;
