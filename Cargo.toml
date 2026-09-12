@@ -1015,7 +1015,7 @@ airform-core = { git = "https://github.com/oxy-hq/airform.git", rev = "3e3e82886
 # connector, so a pipeline can write to a managed Postgres — Neon, Supabase, RDS
 # with `rds.force_ssl` — instead of failing the handshake. (0.1.33 and earlier
 # connected `NoTls` and could not.)
-airway = { git = "https://github.com/oxy-hq/airway-internal.git", tag = "0.1.42", default-features = false, features = [
+airway = { git = "https://github.com/oxy-hq/airway-internal.git", tag = "0.1.44", default-features = false, features = [
   "duckdb",
   "postgres",
 ] }
