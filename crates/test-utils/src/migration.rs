@@ -104,11 +104,15 @@
 //! Two things about the failure mode are worth keeping, because they make it
 //! look worse than a race usually does:
 //!
-//! - **On Postgres, sea-orm wraps a whole `Migrator::up` in ONE transaction**
-//!   (`exec_with_connection` in `sea-orm-migration`), install of the
-//!   `seaql_migrations` table included. A failure on the last pending migration
-//!   therefore rolls back *everything*, so a poisoned database shows no
-//!   `seaql_migrations` table at all — not a partially-applied one.
+//! - **What a failure leaves behind depends on the sea-orm-migration major.**
+//!   1.x wrapped a whole `Migrator::up` in ONE Postgres transaction
+//!   (`exec_with_connection`), so a failure on the last pending migration
+//!   rolled back everything and a poisoned database showed no
+//!   `seaql_migrations` table at all. 2.0 (#2900) commits each migration on its
+//!   own (`exec_up_with`), so the migrations before the failing one stay
+//!   applied and recorded — a partially-applied database, not an empty one.
+//!   A migration may also opt out of its transaction (`use_transaction()`), as
+//!   the concurrent index build in `m20260911_000002` does.
 //! - **It does not heal.** A fixture that runs `RuntimeMigrator::up` *without*
 //!   central creates `agentic_runs` already carrying `thread_id`, and every
 //!   central run afterwards dies on `42701` forever — every test in every

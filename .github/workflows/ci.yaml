@@ -706,6 +706,24 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 10s
           --health-timeout 5s --health-retries 5
+      # The ClickHouse the engine-backed suites write to: agentic-connector's
+      # ClickHouse tests and oxy-app's `warehouse_writes_on_engines`. Both fell
+      # back to a testcontainer and skipped when none started, and a skip
+      # reports as a pass — the same silence as the OLTP suite above, on the one
+      # engine where `ctx.warehouse.insert` then broke in production (0.5.140).
+      # `OXY_TEST_REQUIRE_CLICKHOUSE=1` on the test step makes absence a
+      # failure. `25.8-alpine` is an LTS published for arm64, which the internal
+      # runner is.
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.8-alpine
+        env:
+          CLICKHOUSE_USER: default
+          CLICKHOUSE_PASSWORD: clickhouse
+        ports:
+          - 18123:8123
+        options: >-
+          --health-cmd "wget --spider -q http://127.0.0.1:8123/ping" --health-interval 10s
+          --health-timeout 5s --health-retries 5
     steps:
       - name: Free disk space
         if: matrix.task == 'test' && runner.environment == 'github-hosted'
@@ -827,6 +845,8 @@ jobs:
           OXY_DATABASE_URL: "postgresql://admin:password@localhost:5432/default"
           OXY_BIN: "${{ github.workspace }}/target/debug/oxy"
           AGENTIC_ONLY: ${{ inputs.agentic_only }}
+          OXY_TEST_CLICKHOUSE_URL: "http://localhost:18123"
+          OXY_TEST_CLICKHOUSE_PASSWORD: "clickhouse"
         run: |
           if [[ "${{ matrix.task }}" == "check" ]]; then
             if [[ "$AGENTIC_ONLY" == "true" ]]; then
@@ -876,8 +896,10 @@ jobs:
             # failure. That suite skipped for this whole PR and reported green;
             # the `oltp-postgres` service above is what makes it run, and this
             # is what makes a future mismatch between the two loud instead of
-            # silent.
-            OXY_OLTP_REQUIRE_DB=1 cargo nextest run --workspace --no-fail-fast
+            # silent. OXY_TEST_REQUIRE_CLICKHOUSE does the same for the
+            # `clickhouse` service.
+            OXY_OLTP_REQUIRE_DB=1 OXY_TEST_REQUIRE_CLICKHOUSE=1 \
+              cargo nextest run --workspace --no-fail-fast
 
             ./target/debug/oxy gen-config-schema --check
           fi

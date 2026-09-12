@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 2,
+  "slug": "warehouse-canary",
+  "name": "Warehouse Canary",
+  "functions": {
+    "canary": {
+      "route": true,
+      "schedule": "*/5 * * * *",
+      "timezone": "UTC",
+      "timeoutSeconds": 60,
+      "destinations": ["canary_warehouse"]
+    }
+  }
+}

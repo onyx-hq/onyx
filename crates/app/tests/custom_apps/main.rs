@@ -25,5 +25,7 @@ mod custom_apps_cache_invalidation;
 mod custom_apps_publish_function_artifacts;
 mod custom_apps_publish_workspace;
 mod example_app_serving;
+mod function_failure_alerts;
 mod seed_example_app;
 mod storage_history_query;
+mod warehouse_writes_on_engines;

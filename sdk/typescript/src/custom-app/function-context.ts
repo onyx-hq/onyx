@@ -234,6 +234,16 @@ export interface OxyWarehouseApi {
   query(database: string, sql: string): Promise<{ rows: OxyFunctionRow[]; truncated: boolean }>;
   insert(database: string, table: string, rows: OxyFunctionRow[]): Promise<unknown>;
   exec(database: string, sql: string): Promise<unknown>;
+  /**
+   * Insert rows, updating any whose `conflictColumns` already exist.
+   *
+   * Compiles to `INSERT … ON CONFLICT … DO UPDATE`, which only Postgres and
+   * DuckDB parse, and which needs a primary key or unique constraint on
+   * `conflictColumns`. On any other warehouse — ClickHouse, Snowflake, BigQuery,
+   * MySQL — the call is refused by name before anything is sent; use `exec` with
+   * that warehouse's own upsert statement instead. Airhouse (DuckLake) tables
+   * carry no such constraint, so there the engine refuses it.
+   */
   upsert(
     database: string,
     table: string,

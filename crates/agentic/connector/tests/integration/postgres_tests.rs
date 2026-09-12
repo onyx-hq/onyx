@@ -74,6 +74,11 @@ pub(crate) async fn test_dsn() -> Option<Dsn> {
                         // Must match at every setup site — reuse hashes the config.
                         // See internal-docs/workspace-source.md.
                         .with_shm_size(1024 * 1024 * 1024)
+                        // Reuse matches on labels, not image: without one of our
+                        // own this adopts any reusable container that is up. Not
+                        // oxy-app's `tech.oxy.test-postgres` — that one lacks this
+                        // shm size, and sharing it would lose it.
+                        .with_label("tech.oxy.test-postgres-connector", "18-alpine")
                         .with_reuse(ReuseDirective::Always)
                         .start()
                         .await

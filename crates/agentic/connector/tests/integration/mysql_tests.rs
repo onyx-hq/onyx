@@ -62,6 +62,12 @@ async fn test_dsn() -> Option<Dsn> {
                         // Must match at every setup site — reuse hashes the config.
                         // See internal-docs/workspace-source.md.
                         .with_shm_size(1024 * 1024 * 1024)
+                        // Reuse matches on labels, not image. Without one of
+                        // our own this adopted whatever reusable container was
+                        // up (the ClickHouse or Postgres one), found no 3306,
+                        // and every test here skipped — green in CI while two
+                        // of them could not pass on MySQL.
+                        .with_label("tech.oxy.test-mysql", "8.1")
                         .with_reuse(ReuseDirective::Always)
                         .start()
                         .await
@@ -192,10 +198,11 @@ async fn execute_query_full_preserves_int_types() {
         rows[0][0],
         TypedValue::Int64(_) | TypedValue::Int32(_)
     ));
-    assert!(matches!(
-        rows[0][1],
-        TypedValue::Int64(_) | TypedValue::Int32(_)
-    ));
+    // `CAST(… AS UNSIGNED)` is BIGINT UNSIGNED, which can exceed i64: the
+    // connector routes it through Decimal on purpose (`mysql_type_to_typed`).
+    // This expected Int* and never ran — the container it reused was not
+    // MySQL, so the suite skipped.
+    assert_eq!(rows[0][1], TypedValue::Decimal("2".to_string()));
     assert!(matches!(rows[0][3], TypedValue::Float64(f) if (f - 4.5).abs() < 1e-9));
 
     // At least one column's ColumnSpec should surface as Int*/Float64.
@@ -324,12 +331,16 @@ async fn execute_query_full_no_truncation() {
         return;
     };
 
-    // MySQL has no `generate_series`, so build rows via a recursive CTE.
+    // MySQL has no `generate_series`, so build rows via a recursive CTE —
+    // 1000 deep at most, MySQL's default `cte_max_recursion_depth`, crossed
+    // with three rows for 3000. (A 3000-deep CTE was refused with error 3636;
+    // nobody saw, because this suite skipped.)
     let stream = c
         .execute_query_full(
             "WITH RECURSIVE seq(n) AS ( \
-                SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 3000 \
-             ) SELECT n FROM seq",
+                SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 1000 \
+             ) SELECT seq.n * 3 - k.k AS n FROM seq \
+               CROSS JOIN (SELECT 0 AS k UNION ALL SELECT 1 UNION ALL SELECT 2) k",
         )
         .await
         .unwrap();

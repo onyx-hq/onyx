@@ -42,6 +42,23 @@ pub(super) struct QuerySummary {
     pub table: String,
 }
 
+/// `sql` past any leading whitespace, `-- …` line comments and `/* … */` block
+/// comments, so the verb is the statement's first keyword rather than `--`. An
+/// unterminated block comment leaves nothing.
+fn skip_leading_comments(sql: &str) -> &str {
+    let mut rest = sql.trim_start();
+    loop {
+        if let Some(after) = rest.strip_prefix("--") {
+            rest = after.split_once('\n').map_or("", |(_, next)| next);
+        } else if let Some(after) = rest.strip_prefix("/*") {
+            rest = after.split_once("*/").map_or("", |(_, next)| next);
+        } else {
+            return rest;
+        }
+        rest = rest.trim_start();
+    }
+}
+
 /// Replace every single-quoted string literal (`''` escapes included) with a
 /// space, so a keyword inside a literal — `select 'x from secret' …` — is
 /// never mistaken for the real one. Unterminated literals swallow the rest.
@@ -69,7 +86,7 @@ pub(super) fn strip_string_literals(sql: &str) -> String {
 }
 
 pub(super) fn db_query_summary(sql: &str) -> QuerySummary {
-    let sql = strip_string_literals(sql);
+    let sql = strip_string_literals(skip_leading_comments(sql));
     let tokens: Vec<&str> = sql
         .split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == ';' || c == ',')
         .filter(|t| !t.is_empty())
@@ -203,6 +220,24 @@ mod tests {
         assert_eq!(cte.verb, "WITH");
         assert_eq!(cte.table, "");
         assert_eq!(db_query_summary("").verb, "");
+    }
+
+    #[test]
+    fn a_leading_comment_is_not_the_verb() {
+        // The verb decides whether a write is audited (`is_write_verb`), so a
+        // comment-prefixed INSERT read as verb `--` was a write with no row.
+        let line = db_query_summary("-- receiving report\nINSERT INTO receipts (a) VALUES (1)");
+        assert_eq!(
+            (line.verb.as_str(), line.table.as_str()),
+            ("INSERT", "receipts")
+        );
+        let block = db_query_summary("  /* nightly */ /* two */\n update ledger set x = 1");
+        assert_eq!(
+            (block.verb.as_str(), block.table.as_str()),
+            ("UPDATE", "ledger")
+        );
+        assert_eq!(db_query_summary("-- only a comment").verb, "");
+        assert_eq!(db_query_summary("/* unterminated insert into t").verb, "");
     }
 
     #[test]

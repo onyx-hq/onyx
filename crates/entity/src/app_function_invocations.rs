@@ -36,6 +36,10 @@ pub struct Model {
     /// `None` on rows written before the column existed — read as 200, which is
     /// what they were already being reported as.
     pub result_status: Option<i16>,
+    /// A digest of how the invocation failed, with the message's data taken
+    /// out — `None` when it did not fail, and on rows from before the column.
+    /// Written with `error`; see `custom_apps_functions::failure_signal`.
+    pub failure_fingerprint: Option<String>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

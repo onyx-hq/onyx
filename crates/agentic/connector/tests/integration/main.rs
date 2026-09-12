@@ -7,6 +7,7 @@
 //!
 //! See `internal-docs/testing.md` for the cost model.
 
+mod clickhouse_tagged_tests;
 mod clickhouse_tests;
 mod domo_tests;
 mod duckdb_tests;

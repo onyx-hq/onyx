@@ -19,9 +19,15 @@ use sea_orm_migration::sea_orm::{ConnectionTrait, Statement};
 ///
 /// **Locking, deliberately.** This is a plain `CREATE INDEX`, so it holds a
 /// `SHARE` lock on `metric_anomalies` for the duration of the build: reads keep
-/// working, but every write blocks — scan upserts and status changes alike. `CONCURRENTLY` is not an
-/// option here: sea-orm wraps each migration in a transaction and Postgres
-/// refuses concurrent index builds inside one. The call to take the lock anyway
+/// working, but every write blocks — scan upserts and status changes alike.
+/// When this was written the reasoning was that `CONCURRENTLY` was not an
+/// option, because sea-orm ran migrations inside a transaction and Postgres
+/// refuses concurrent index builds inside one. That held for
+/// sea-orm-migration 1.x; since 2.0 a migration can opt out with
+/// `use_transaction() -> Some(false)` and build `CONCURRENTLY` — see
+/// `m20260911_000002_function_failure_fingerprint_index`. A new index on a
+/// table that grows with traffic should do that rather than take this lock.
+/// The call to take the lock anyway
 /// rests on the table's size, not on hope — `metric_anomalies` holds one row per
 /// flagged bucket per monitored segment, upserted rather than appended, so it
 /// grows with monitor count and history, not with traffic. That is a table in

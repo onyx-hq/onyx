@@ -1,9 +1,10 @@
 //! Integration tests for the ClickHouse connector.
 //!
-//! Spins up a real ClickHouse server via testcontainers (image
-//! `clickhouse/clickhouse-server:24-alpine`). Runs one container per test
-//! process, reused across tests via `OnceCell`. Skips gracefully if Docker
-//! is unavailable.
+//! Uses the ClickHouse at `OXY_TEST_CLICKHOUSE_URL` when set (CI's service
+//! container), otherwise spins one up via testcontainers, reused across tests
+//! via `OnceCell`. Skips if neither is available — unless
+//! `OXY_TEST_REQUIRE_CLICKHOUSE=1`, which makes that a failure, because a
+//! skipped test reports as a pass.
 //!
 //! Run with:
 //!
@@ -19,11 +20,11 @@ use futures::StreamExt;
 // ── Container plumbing ──────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
-struct Conn {
-    url: String,
-    user: String,
-    password: String,
-    database: String,
+pub(crate) struct Conn {
+    pub(crate) url: String,
+    pub(crate) user: String,
+    pub(crate) password: String,
+    pub(crate) database: String,
 }
 
 static TEST_CONN: tokio::sync::OnceCell<Conn> = tokio::sync::OnceCell::const_new();
@@ -31,7 +32,7 @@ static TEST_CONTAINER: tokio::sync::OnceCell<
     std::sync::Arc<testcontainers::ContainerAsync<testcontainers_modules::clickhouse::ClickHouse>>,
 > = tokio::sync::OnceCell::const_new();
 
-async fn test_connection() -> Option<Conn> {
+pub(crate) async fn test_connection() -> Option<Conn> {
     TEST_CONN
         .get_or_try_init(|| async {
             // Allow external CH via env for local iteration.
@@ -57,6 +58,15 @@ async fn test_connection() -> Option<Conn> {
                         // Must match at every setup site — reuse hashes the config.
                         // See internal-docs/workspace-source.md.
                         .with_shm_size(1024 * 1024 * 1024)
+                        // The module defaults to 23.3; CI's service and prod
+                        // run 25.8. Newer images lock the passwordless
+                        // default user to localhost unless told not to.
+                        .with_tag("25.8-alpine")
+                        .with_env_var("CLICKHOUSE_SKIP_USER_SETUP", "1")
+                        // Reuse matches on labels, not image: without one of
+                        // our own it adopts whatever reusable container is up
+                        // (oxy-app's test Postgres, say) and finds no 8123.
+                        .with_label("tech.oxy.test-clickhouse", "25.8-alpine")
                         .with_reuse(ReuseDirective::Always);
                     img.start()
                         .await
@@ -83,11 +93,16 @@ async fn test_connection() -> Option<Conn> {
             })
         })
         .await
+        .map(Conn::clone)
+        .inspect_err(|e| {
+            if std::env::var("OXY_TEST_REQUIRE_CLICKHOUSE").as_deref() == Ok("1") {
+                panic!("OXY_TEST_REQUIRE_CLICKHOUSE=1 but no ClickHouse is reachable: {e}");
+            }
+        })
         .ok()
-        .cloned()
 }
 
-async fn skip_without_docker() -> Option<ClickHouseConnector> {
+pub(crate) async fn skip_without_docker() -> Option<ClickHouseConnector> {
     let c = test_connection().await?;
     ClickHouseConnector::new(c.url, c.user, c.password, c.database)
         .await
@@ -96,7 +111,9 @@ async fn skip_without_docker() -> Option<ClickHouseConnector> {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-async fn collect_typed(stream: TypedRowStream) -> (Vec<ColumnSpec>, Vec<Vec<TypedValue>>) {
+pub(crate) async fn collect_typed(
+    stream: TypedRowStream,
+) -> (Vec<ColumnSpec>, Vec<Vec<TypedValue>>) {
     let TypedRowStream {
         columns, mut rows, ..
     } = stream;

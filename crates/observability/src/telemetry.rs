@@ -69,6 +69,10 @@ fn observability_filter_for(level: &str) -> EnvFilter {
         // which keeps one row per invocation rather than one per query. See
         // `custom_apps_functions::host_call_attrs::HOST_CALL_TARGET`.
         .add_directive("oxy::host_call=off".parse().unwrap())
+        // The platform's line for a failed custom-app invocation
+        // (`custom_apps_functions::failure_signal`): on-call's, in the stderr
+        // log. The tenant's store already holds the invocation and its error.
+        .add_directive("oxy::app_function=off".parse().unwrap())
         // HTTP request spans are platform telemetry too. Nothing tenant-facing
         // reads them (the console roots on `agent.run_agent` / `analytics.run`),
         // and on oxy-dev they were ~380k rows a day of this store, mostly the
@@ -370,6 +374,7 @@ mod tests {
 
         tracing::info!(target: "oxy_telemetry::http_trace", "request");
         tracing::info!(target: "oxy::host_call", "db.query");
+        tracing::warn!(target: "oxy::app_function", "custom-app function invocation failed");
         tracing::debug!(target: "aws_smithy_runtime::client::orchestrator", "try_op");
         tracing::debug!(target: "opentelemetry_sdk", "export");
         tracing::debug!(target: "tower::buffer::worker", "x");

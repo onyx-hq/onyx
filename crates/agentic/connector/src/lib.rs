@@ -78,7 +78,7 @@ pub use connector::{
     ColumnStats, ConnectorError, DatabaseConnector, ExecutionResult, QueryFailedDetails, ResultCap,
     ResultSummary, SchemaColumnInfo, SchemaInfo, SchemaTableInfo, SqlDialect, SqlScript,
     estimate_row_bytes, guard_row_stream, is_returning_statement, is_wrappable_select,
-    normalize_sql, plan_sql_script, split_sql_statements,
+    normalize_sql, plan_sql_script, split_sql_statements, with_trailing_comment,
 };
 
 #[cfg(feature = "transactions")]

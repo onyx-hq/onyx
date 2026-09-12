@@ -47,25 +47,21 @@ impl SqlDialect {
     /// *which* vendor a dialect is must go through this constant rather than
     /// matching the label itself — otherwise relabelling silently changes
     /// behaviour with no compile error. [`ClickHouseConnector::dialect`]
-    /// returns it and [`Self::values_is_input_format`] compares against it, so
-    /// the two move together.
+    /// returns it.
     ///
     /// [`ClickHouseConnector::dialect`]: crate::clickhouse::ClickHouseConnector
     pub const CLICKHOUSE: SqlDialect = SqlDialect::Other("ClickHouse");
 
-    /// Whether this engine reads `VALUES` as an input *format* rather than as
-    /// an expression list.
+    /// Whether this engine parses `INSERT … ON CONFLICT (…) DO UPDATE SET …`.
     ///
-    /// Where it does, the server stops parsing SQL at the keyword and treats
-    /// the rest of the request body as row data — so anything a caller appends
-    /// after the rows, a trailing comment included, is parsed as another row
-    /// and the statement is rejected whole (`Code: 27 … expected '(' before`).
-    /// Callers that decorate SQL must put the decoration in FRONT on such a
-    /// dialect. Only ClickHouse behaves this way among the connectors here;
-    /// Postgres and DuckDB parse `VALUES` as an expression list and tolerate a
-    /// trailing comment.
-    pub fn values_is_input_format(self) -> bool {
-        self == Self::CLICKHOUSE
+    /// That spelling is Postgres's, which DuckDB and SQLite adopted; no other
+    /// engine here parses it. ClickHouse fails it least legibly: `ON CONFLICT`
+    /// lands in the `VALUES` row stream and is refused as a row it could not
+    /// parse (`Code: 27`). Redshift reports [`Self::Postgres`], because it
+    /// shares the wire protocol, but does not parse it either — there the
+    /// engine still refuses the statement itself.
+    pub fn parses_on_conflict(self) -> bool {
+        matches!(self, Self::Postgres | Self::DuckDb | Self::Sqlite)
     }
 
     /// A concise, human-readable name for prompt injection.
@@ -249,6 +245,21 @@ impl From<TypedRowError> for ConnectorError {
     fn from(err: TypedRowError) -> Self {
         ConnectorError::Other(err.to_string())
     }
+}
+
+/// `sql` with `tag` appended as a sqlcommenter comment on its own line, so a
+/// statement ending in a `--` comment cannot swallow it.
+///
+/// `*` and `/` are dropped from the tag. A well-formed tag has neither — its
+/// values are URL-encoded — and without them it can neither close the comment
+/// early nor open a nested one, which Postgres honours.
+pub fn with_trailing_comment(sql: &str, tag: &str) -> String {
+    let mut out = String::with_capacity(sql.len() + tag.len() + 5);
+    out.push_str(sql.trim_end());
+    out.push_str("\n/*");
+    out.extend(tag.chars().filter(|c| !matches!(c, '*' | '/')));
+    out.push_str("*/");
+    out
 }
 
 /// Strip trailing whitespace and semicolons from a SQL string.
@@ -945,6 +956,30 @@ pub trait DatabaseConnector: Send + Sync {
     /// execute the statement directly.
     async fn execute_statement(&self, sql: &str) -> Result<(), ConnectorError> {
         self.execute_query(sql, 0).await.map(|_| ())
+    }
+
+    /// Execute a statement that carries an audit tag, discarding any rows.
+    ///
+    /// `tag` is the body of a sqlcommenter comment — `key='value'` pairs with
+    /// URL-encoded values — naming who ran the statement. Where it goes is the
+    /// connector's decision, because only the connector knows what its engine
+    /// reads as SQL. The default is the sqlcommenter convention,
+    /// [`with_trailing_comment`]: Postgres and DuckDB parse it as a comment,
+    /// and Airhouse can lift it into a commit message from the end of the
+    /// statement. An engine that reads bytes after the SQL as data, or that has
+    /// a channel beside the SQL for exactly this, overrides it.
+    ///
+    /// A trailing `;` is dropped before the comment goes on: connectors that
+    /// split scripts (`plan_sql_script`) would otherwise read `…;\n/*tag*/` as
+    /// a statement plus a comment-only one, and discard the tag with the
+    /// latter. In a multi-statement script only the last statement carries it.
+    ///
+    /// Hand the statement over untouched. Decorating it first is the bug this
+    /// method exists to prevent: the caller cannot know what the engine will
+    /// make of the decoration.
+    async fn execute_statement_tagged(&self, sql: &str, tag: &str) -> Result<(), ConnectorError> {
+        self.execute_statement(&with_trailing_comment(normalize_sql(sql), tag))
+            .await
     }
 
     /// Prepare for schema introspection.

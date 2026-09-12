@@ -20,6 +20,12 @@
 /// tag, statement trailer, `audit_events` row).
 #[cfg(feature = "custom-app-functions")]
 mod data_audit;
+/// Whether a failed function should page ops: new in a week, capped, once.
+pub mod failure_alert;
+/// The page `failure_alert` decides on: the finalization hook and Slack post.
+mod failure_page;
+/// A failed invocation's kind and fingerprint — the failure without its payload.
+mod failure_signal;
 #[cfg(feature = "custom-app-functions")]
 pub mod host;
 /// What a host op may say about itself on the platform trace (shape, never
@@ -34,6 +40,14 @@ pub mod seam;
 /// Per-invocation registry of open `ctx.tx()` transactions.
 #[cfg(feature = "custom-app-functions")]
 mod tx;
+/// Which warehouses `ctx.warehouse.upsert` can reach, refused by name.
+#[cfg(feature = "custom-app-functions")]
+mod upsert_support;
+
+/// Named so `ProjectFunctionHost::new` can be called from outside the crate —
+/// the engine-backed tests in `tests/custom_apps/` build a real host.
+#[cfg(feature = "custom-app-functions")]
+pub use data_audit::InvocationIdentity;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -621,6 +635,10 @@ async fn reap_stuck_invocations(db: &sea_orm::DatabaseConnection) {
             app_function_invocations::Column::Error,
             Expr::value("reaped: still running past max lifetime (instance died or detached)"),
         )
+        .col_expr(
+            app_function_invocations::Column::FailureFingerprint,
+            Expr::value(failure_signal::Failure::timeout_fingerprint()),
+        )
         .filter(app_function_invocations::Column::Status.eq("running"))
         .filter(app_function_invocations::Column::CreatedAt.lt(cutoff))
         .exec(db)
@@ -701,6 +719,7 @@ async fn insert_running_invocation(
         result_body: Set(None),
         result_status: Set(None),
         request_hash: Set(request_hash),
+        failure_fingerprint: Set(None),
     }
     .insert(db)
     .await
@@ -738,6 +757,13 @@ async fn reclaim_or_conflict(
         .col_expr(
             app_function_invocations::Column::ResultStatus,
             Expr::value(Option::<i16>::None),
+        )
+        // Cleared with `error`: a retry that is running again must not keep
+        // counting as a failure towards a page (`failure_alert`) — and, with
+        // `created_at` reset below, it would count as a recent one.
+        .col_expr(
+            app_function_invocations::Column::FailureFingerprint,
+            Expr::value(Option::<String>::None),
         )
         .col_expr(
             app_function_invocations::Column::CreatedAt,
@@ -1158,6 +1184,8 @@ pub async fn handle_function_request(
     update.status = Set(status_str.to_string());
     update.duration_ms = Set(Some(duration_ms));
     update.error = Set(error_msg.clone());
+    let failure = failure_signal::Failure::of(status_str, http_status, error_msg.as_deref());
+    update.failure_fingerprint = Set(failure.as_ref().map(|f| f.fingerprint.clone()));
     // Persist the result for idempotent replay — only when a key was supplied,
     // so the audit table isn't bloated with every function's output.
     if idempotency_key.is_some() && status_str == "success" {
@@ -1166,6 +1194,8 @@ pub async fn handle_function_request(
     }
     if let Err(e) = update.update(&db).await {
         error!("failed to update app_function_invocations row: {e}");
+    } else if let Some(failure) = &failure {
+        failure_page::observe(&db, &app, function_name, invocation_id, failure).await;
     }
     let request_id = request_id_from_headers(&headers);
     super::custom_apps_telemetry::record_function(super::custom_apps_telemetry::FunctionEvent {
@@ -1373,6 +1403,7 @@ pub(crate) async fn run_scheduled_function(
         result_body: Set(None),
         result_status: Set(None),
         request_hash: Set(None),
+        failure_fingerprint: Set(None),
     })
     .insert(db)
     .await
@@ -1445,12 +1476,16 @@ pub(crate) async fn run_scheduled_function(
     update.status = Set(status_str.to_string());
     update.duration_ms = Set(Some(duration_ms));
     update.error = Set(error_msg.clone());
+    let failure = failure_signal::Failure::of(status_str, http_status, error_msg.as_deref());
+    update.failure_fingerprint = Set(failure.as_ref().map(|f| f.fingerprint.clone()));
     if status_str == "success" {
         update.result_body = Set(Some(body_text.clone()));
         update.result_status = Set(Some(http_status as i16));
     }
     if let Err(e) = update.update(db).await {
         error!("failed to update scheduled invocation row: {e}");
+    } else if let Some(failure) = &failure {
+        failure_page::observe(db, &app, function_name, invocation_id, failure).await;
     }
     super::custom_apps_telemetry::record_function(super::custom_apps_telemetry::FunctionEvent {
         org_id: app.org_id,
@@ -1746,6 +1781,9 @@ fn isolate_span(
         request_id = tracing::field::Empty,
         status = tracing::field::Empty,
         duration_ms = tracing::field::Empty,
+        // Set by `failure_signal::Failure::report` when the invocation failed.
+        otel.status_code = tracing::field::Empty,
+        error.type = tracing::field::Empty,
         // FaaS semantic conventions, so HyperDX's own views group invocations
         // by function; `otel.name` makes the exported span read
         // `fn <app>/<function>` while the tracing span keeps its name for the
@@ -1774,6 +1812,9 @@ async fn run_with_runtime(args: RunArgs<'_>) -> RunOutcome {
 
     span.record("status", outcome.0);
     span.record("duration_ms", started.elapsed().as_millis() as i64);
+    if let Some(failure) = failure_signal::Failure::of(outcome.0, outcome.3, outcome.1.as_deref()) {
+        failure.report();
+    }
     outcome
 }
 

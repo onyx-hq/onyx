@@ -23,6 +23,7 @@ use super::data_audit::{self, InvocationIdentity, WriteRecord};
 use super::host_call_attrs::db_query_summary;
 use super::runtime::{FUNCTION_MAX_ROWS, FUNCTION_STREAM_MAX_ROWS, FunctionHost};
 use super::seam::{FunctionProjectContext, FunctionQueryExecutor};
+use super::upsert_support;
 use agentic_connector::SqlDialect;
 use agentic_connector::SqlTransaction;
 
@@ -828,20 +829,19 @@ impl FunctionHost for ProjectFunctionHost {
         let summary = db_query_summary(&sql);
         let payload_table = payload.get("table").and_then(|v| v.as_str());
         data_audit::record_db_span(&summary, Some(database), payload_table);
-        let (_, traceparent) = Self::trace_context();
-        // Connect before tagging, not after: where the trailer goes depends on
-        // the dialect on the other end of this connection.
         let connector = self.connect(database).await?;
-        let tagged = if data_audit::trailer_leads(connector.dialect(), &summary.verb) {
-            data_audit::commented_leading(&sql, &self.identity, traceparent.as_deref())
-        } else {
-            data_audit::commented(&sql, &self.identity, traceparent.as_deref())
-        };
+        if op == "upsert" {
+            upsert_support::check(connector.dialect())?;
+        }
+        let (_, traceparent) = Self::trace_context();
+        let tag = data_audit::tag(&self.identity, traceparent.as_deref());
         let plane = data_audit::plane_for_dialect(connector.dialect());
         let label = format!("warehouse {op}");
         with_db_timeout(&label, async {
+            // The SQL goes as the app wrote it; the connector decides where the
+            // tag rides, because only it knows what its engine reads as SQL.
             connector
-                .execute_statement(&tagged)
+                .execute_statement_tagged(&sql, &tag)
                 .await
                 .map_err(|e| format!("warehouse {op} failed: {e}"))
         })
@@ -1666,6 +1666,7 @@ async fn query_with_truncation(
 /// `upsert` additionally appends `ON CONFLICT (conflictColumns) DO UPDATE SET
 /// col = EXCLUDED.col` for every non-key column — the Postgres/DuckDB
 /// upsert syntax, which covers the destinations this is scoped to (§11.3).
+/// [`upsert_support::check`] refuses the others by name before this is sent.
 fn build_insert_sql(payload: &serde_json::Value, upsert: bool) -> Result<String, String> {
     let table = payload
         .get("table")

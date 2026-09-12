@@ -576,8 +576,10 @@ impl MigrationTrait for Migration {
         // INDEX` (no CONCURRENTLY) is fine — the table is brand-new in
         // this migration, zero rows. Future migrations adding a
         // comparable index to an already-busy `revisions` must use
-        // CONCURRENTLY via `execute_unprepared` (Sea-ORM wraps each
-        // migration in a tx, so CONCURRENTLY can't run inside one).
+        // CONCURRENTLY via `execute_unprepared`, in a migration whose
+        // `use_transaction()` returns `Some(false)` — sea-orm-migration 2.0
+        // runs every other migration in a transaction, where CONCURRENTLY
+        // can't run. See `m20260911_000002_function_failure_fingerprint_index`.
         manager
             .get_connection()
             .execute_unprepared(

@@ -31,7 +31,7 @@ use agentic_core::result::{
 use crate::clickhouse_typed::{ch_type_to_typed, parse_ch_cell};
 use crate::connector::{
     ColumnStats, ConnectorError, DatabaseConnector, ExecutionResult, ResultSummary,
-    SchemaColumnInfo, SchemaInfo, SchemaTableInfo, SqlDialect, is_returning_statement,
+    SchemaColumnInfo, SchemaInfo, SchemaTableInfo, SqlDialect, SqlScript, is_returning_statement,
     normalize_sql, plan_sql_script,
 };
 
@@ -209,11 +209,14 @@ impl ClickHouseConnector {
     /// Execute a side-effect statement (DDL/DML) via HTTP, discarding any
     /// body. Unlike [`http_query`](Self::http_query) this does not append
     /// `FORMAT JSONCompact`, which would make a `CREATE`/`INSERT`
-    /// statement a syntax error.
-    async fn http_exec(&self, sql: &str) -> Result<(), ConnectorError> {
-        let response = self
-            .client
-            .post(&self.url)
+    /// statement a syntax error. `settings` travel as URL parameters, beside
+    /// the SQL rather than inside it.
+    async fn http_exec(&self, sql: &str, settings: &[(&str, &str)]) -> Result<(), ConnectorError> {
+        let mut request = self.client.post(&self.url);
+        if !settings.is_empty() {
+            request = request.query(settings);
+        }
+        let response = request
             .header("X-ClickHouse-User", &self.user)
             .header("X-ClickHouse-Key", &self.password)
             .header("X-ClickHouse-Database", &self.database)
@@ -230,6 +233,27 @@ impl ClickHouseConnector {
             ));
         }
         Ok(())
+    }
+
+    /// Run a script's leading statements for their side effects, and its final
+    /// statement too when that one returns no rows. Hands the final statement
+    /// back when it does return rows, for the caller to sample.
+    async fn run_side_effects<'s>(
+        &self,
+        script: &'s SqlScript,
+        settings: &[(&str, &str)],
+    ) -> Result<Option<&'s str>, ConnectorError> {
+        for stmt in &script.prefix {
+            self.http_exec(stmt, settings).await?;
+        }
+        let stmt = normalize_sql(&script.final_stmt);
+        if is_returning_statement(stmt) {
+            return Ok(Some(stmt));
+        }
+        if !stmt.is_empty() {
+            self.http_exec(stmt, settings).await?;
+        }
+        Ok(None)
     }
 }
 
@@ -318,6 +342,47 @@ impl DatabaseConnector for ClickHouseConnector {
         SqlDialect::CLICKHOUSE
     }
 
+    /// The tag travels as the `log_comment` setting, never in the SQL.
+    ///
+    /// ClickHouse reads everything after `VALUES` or `FORMAT` as the row
+    /// stream, so the sqlcommenter default — a trailing comment — is parsed as
+    /// one more row and the insert is refused whole (`Code: 27 … expected '('
+    /// before: '/*oxy.app=…'`). That failed every `ctx.warehouse.insert` in
+    /// 0.5.140–0.5.144. A comment in front instead works only while every
+    /// caller classifies every statement correctly; a comment-prefixed INSERT
+    /// defeated the first attempt. `log_comment` is ClickHouse's channel for
+    /// exactly this: the SQL goes byte for byte, and the tag lands in
+    /// `system.query_log.log_comment`, queryable without parsing the statement.
+    ///
+    /// A final statement that returns rows runs untagged, the way
+    /// `execute_statement` always ran it: reads leave no audit record, and
+    /// what reaches the engine for one is this connector's count and sample
+    /// queries, not the statement the caller wrote.
+    #[tracing::instrument(
+        target = "agentic_connector::query",
+        name = "db.query",
+        skip_all,
+        err(level = "info", Display),
+        fields(
+            otel.name = %crate::telemetry::span_name(sql, "clickhouse"),
+            otel.kind = "client",
+            db.system.name = "clickhouse",
+            db.operation.name = %crate::telemetry::operation_name(sql),
+            db.query.text = %crate::telemetry::query_text(sql),
+            oxy.db.method = "execute_statement_tagged",
+        )
+    )]
+    async fn execute_statement_tagged(&self, sql: &str, tag: &str) -> Result<(), ConnectorError> {
+        let script = plan_sql_script(sql);
+        match self
+            .run_side_effects(&script, &[("log_comment", tag)])
+            .await?
+        {
+            Some(read) => self.execute_query(read, 0).await.map(|_| ()),
+            None => Ok(()),
+        }
+    }
+
     #[tracing::instrument(
         target = "agentic_connector::query",
         name = "db.query",
@@ -342,18 +407,9 @@ impl DatabaseConnector for ClickHouseConnector {
         // multi-statement script there is a parser error. Run leading
         // statements for side effects, sample only the final statement.
         let script = plan_sql_script(sql);
-        for stmt in &script.prefix {
-            self.http_exec(stmt).await?;
-        }
-
-        let sql = normalize_sql(&script.final_stmt);
-
-        if !is_returning_statement(sql) {
-            if !sql.is_empty() {
-                self.http_exec(sql).await?;
-            }
+        let Some(sql) = self.run_side_effects(&script, &[]).await? else {
             return Ok(ExecutionResult::empty());
-        }
+        };
 
         // 1. Total row count via subquery.
         let count_sql = format!("SELECT count() FROM ({sql})");
@@ -700,30 +756,38 @@ fn detect_join_keys(tables: &[SchemaTableInfo]) -> Vec<(String, String, String)>
 mod tests {
     use super::*;
 
-    /// The audit trailer that `ctx.warehouse` puts on every statement has to
-    /// lead rather than follow on this dialect, and that choice is made by
-    /// asking [`SqlDialect::values_is_input_format`]. Nothing in the type
-    /// system ties this connector's reported dialect to that predicate — both
-    /// go through `SqlDialect::CLICKHOUSE`, and a future edit could inline a
-    /// relabelled `Other(..)` here instead. This is the assertion that would
-    /// catch it; without it, such an edit silently reinstates a `Code: 27`
-    /// failure on every app INSERT.
+    /// The tag travels beside the statement and the statement goes as written,
+    /// checked at the wire so it needs no server. `clickhouse_tagged_tests`
+    /// proves a real ClickHouse lands the rows and logs the tag; this keeps
+    /// the contract in the unit run, where a relapse to decorating the SQL
+    /// fails in seconds.
     #[tokio::test]
-    async fn the_reported_dialect_is_one_that_streams_values_as_data() {
+    async fn a_tagged_statement_sends_its_tag_as_log_comment_and_its_sql_untouched() {
+        use wiremock::matchers::{body_string, method, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let sql = r#"INSERT INTO "receipts" ("a", "b") VALUES (1, 'x'), (2, 'y')"#;
+        let tag = "oxy.app='receiving',oxy.fn='submit',oxy.invocation='0af7651916cd'";
+        Mock::given(method("POST"))
+            .and(query_param("log_comment", tag))
+            .and(body_string(sql))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
         let conn = ClickHouseConnector::new(
-            "http://127.0.0.1:1".to_string(),
+            server.uri(),
             "u".to_string(),
             "p".to_string(),
             "db".to_string(),
         )
         .await
         .expect("new does no I/O and cannot fail");
-
-        assert!(
-            DatabaseConnector::dialect(&conn).values_is_input_format(),
-            "ClickHouse streams the bytes after VALUES as row data; a decorator \
-             that appends to such a statement corrupts the insert"
-        );
+        conn.execute_statement_tagged(sql, tag)
+            .await
+            .expect("the server answers only a tag beside untouched SQL");
     }
 
     /// `new` does no I/O, so an un-prepared connector must say so rather than

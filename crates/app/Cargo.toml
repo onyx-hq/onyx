@@ -258,7 +258,7 @@ testcontainers = { workspace = true, features = [
     "blocking",
     "reusable-containers",
 ] }
-testcontainers-modules = { workspace = true, features = ["postgres"] }
+testcontainers-modules = { workspace = true, features = ["postgres", "clickhouse"] }
 # The OLTP provisioner tests connect *as the minted writer role* to prove the
 # DSN it hands back actually works and lands writes in the right schema — the
 # one thing asserting on the generated SQL cannot show.
