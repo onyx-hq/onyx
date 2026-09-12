@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use chrono::Utc;
 use entity::apps;
 use entity::organizations;
-use entity::prelude::{AppBuilds, Apps, Organizations};
+use entity::prelude::{AppBuilds, Apps, Organizations, Workspaces};
 use oxy_shared::utils::slugify;
 use sea_orm::ActiveModelTrait;
 use sea_orm::ActiveValue;
@@ -788,6 +788,52 @@ pub(super) async fn slug_taken_in_org(
             tracing::error!("Slug uniqueness check failed for {org_id}/{slug}: {e}");
             internal(e)
         })
+}
+
+/// Refuse to point an app at a workspace outside its own org — on create
+/// (`create_app_unscoped`) and on a move (`update_app`).
+///
+/// `apps.project_id` is what `window.__OXY_APP__.projectId` is injected from, and
+/// the connectors, secrets and data plane the bundle reaches all resolve against
+/// it — so a row naming another org's workspace runs this org's app on that
+/// tenant's data. This is a data-integrity rule, not an access decision: no
+/// caller, however privileged, may write that row. Same rule as
+/// `custom_apps_publish::validate_project`.
+///
+/// A missing workspace, an orphaned one (no `org_id`) and one in another org all
+/// get the same **422** and the same body. Telling them apart would tell a
+/// platform grant bounded to this org that an id exists in some other tenant —
+/// the probe `app_scope_guard` answers indistinguishably everywhere else. The
+/// log line records which it was.
+pub(super) async fn ensure_workspace_in_org(
+    db: &DatabaseConnection,
+    workspace_id: Uuid,
+    org_id: Uuid,
+) -> Result<(), ApiErr> {
+    let ws = Workspaces::find_by_id(workspace_id)
+        .one(db)
+        .await
+        .map_err(|e| {
+            tracing::error!("Workspace lookup failed for {workspace_id}: {e}");
+            internal(e)
+        })?;
+    let reason = match ws {
+        Some(w) if w.org_id == Some(org_id) => return Ok(()),
+        Some(w) if w.org_id.is_none() => "workspace has no org",
+        Some(_) => "workspace belongs to another org",
+        None => "workspace does not exist",
+    };
+    tracing::warn!(
+        workspace_id = %workspace_id, org_id = %org_id, reason,
+        "refused to point an app at a workspace outside its org"
+    );
+    Err(api_err(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        format!(
+            "Workspace {workspace_id} is not part of this app's organization. \
+             An app can only use a workspace in its own organization."
+        ),
+    ))
 }
 
 /// Derive a slug from a human name and dedupe by appending `-2`, `-3`, …

@@ -292,6 +292,12 @@ pub async fn create_app_unscoped(
             )
         })?;
 
+    // The workspace must belong to the org the row is created in: the bundle runs
+    // against whatever workspace `project_id` names. Same rule `update_app` holds a
+    // move to, checked with the rest of the validation so a refusal inserts no row
+    // and opens no scaffold PR.
+    ensure_workspace_in_org(&db, req.project_id, req.org_id).await?;
+
     // Slug: caller-supplied wins, but we still validate + collision-check.
     // No caller slug? Auto-derive from name and dedupe with `-2`, `-3`, …
     // until unique within this org.
@@ -769,6 +775,16 @@ pub async fn update_app(
             );
             return Err(oltp_store_blocks("renamed", org_id, &writer));
         }
+    }
+
+    // A move must stay inside the app's own org: the bundle runs against whatever
+    // workspace this row names. Only an actual move is checked, so re-sending the
+    // current `project_id` still saves the rest of the edit — including for an app
+    // whose workspace has since been deleted.
+    if let Some(pid) = req.project_id
+        && pid != existing.project_id
+    {
+        ensure_workspace_in_org(&db, pid, org_id).await?;
     }
 
     let mut active: apps::ActiveModel = existing.into();
