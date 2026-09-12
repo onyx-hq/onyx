@@ -584,7 +584,10 @@ export interface OxyStorageApi {
    * for deletion (an absent key counts too), not a count of keys that existed.
    */
   delete(keyOrKeys: string | string[]): Promise<{ deleted: number }>;
-  /** Server-side copy within the app's silo (requires `storage.write`). */
+  /**
+   * Server-side copy within the app's silo (requires `storage.read` **and**
+   * `storage.write`: it reads the source and writes the destination).
+   */
   copy(
     fromKey: string,
     toPathname: string,

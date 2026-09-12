@@ -123,9 +123,11 @@ pub struct FunctionCapabilities {
     pub email_send: bool,
     /// Gate for `ctx.org.people()` — the org's people directory, read-only.
     pub org_read: bool,
-    /// Gate for `ctx.storage` reads (getDownloadUrl / list / get).
+    /// Gate for `ctx.storage` reads (getDownloadUrl / get / head / list, and
+    /// the source side of copy).
     pub storage_read: bool,
-    /// Gate for `ctx.storage` writes (getUploadUrl / put).
+    /// Gate for `ctx.storage` writes (getUploadUrl / put / delete, and the
+    /// destination side of copy).
     pub storage_write: bool,
     /// What `ctx.oltp` may do — the gate AND why it's closed, so the two
     /// fail-closed reasons get different diagnoses. See [`OltpCapability`].
@@ -1268,23 +1270,7 @@ impl FunctionHost for ProjectFunctionHost {
     ) -> Result<serde_json::Value, String> {
         use crate::server::api::custom_apps_storage as st;
 
-        // Fail-closed capability gate: uploads/put need `storage.write`; the
-        // read paths need `storage.read`.
-        let needs_write = matches!(op.as_str(), "getUploadUrl" | "put");
-        if needs_write && !self.caps.storage_write {
-            return Err(
-                "StorageCapabilityMissing: this function has not declared the `storage.write` \
-                 capability (add \"storage\": { \"write\": true } to its oxy-app.json entry)"
-                    .to_string(),
-            );
-        }
-        if !needs_write && !self.caps.storage_read {
-            return Err(
-                "StorageCapabilityMissing: this function has not declared the `storage.read` \
-                 capability (add \"storage\": { \"read\": true } to its oxy-app.json entry)"
-                    .to_string(),
-            );
-        }
+        check_storage_capability(&op, &self.caps)?;
 
         let str_field = |key: &str| payload.get(key).and_then(|v| v.as_str());
         let bool_field = |key: &str| payload.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
@@ -1455,6 +1441,43 @@ impl FunctionHost for ProjectFunctionHost {
             other => Err(format!("ctx.storage: unknown op '{other}'")),
         }
     }
+}
+
+/// Fail-closed capability gate for one `ctx.storage` op.
+///
+/// - `getUploadUrl` / `put` / `delete` change the silo → `storage.write`.
+/// - `copy` reads its source and writes its destination → both.
+/// - `getDownloadUrl` / `get` / `head` / `list` → `storage.read`.
+/// - Any other op is refused by name with the dispatch's own unknown-op error,
+///   whatever the function declared.
+///
+/// `delete` and `copy` used to fall through to the read branch, so a function
+/// that declared only `storage.read` could destroy or overwrite objects in its
+/// app's silo. There is no catch-all arm for the same reason: an op added to the
+/// dispatch without an arm here is refused, rather than shipping gated on
+/// `storage.read` alone.
+fn check_storage_capability(op: &str, caps: &FunctionCapabilities) -> Result<(), String> {
+    let (needs_read, needs_write) = match op {
+        "getUploadUrl" | "put" | "delete" => (false, true),
+        "copy" => (true, true),
+        "getDownloadUrl" | "get" | "head" | "list" => (true, false),
+        other => return Err(format!("ctx.storage: unknown op '{other}'")),
+    };
+    if needs_write && !caps.storage_write {
+        return Err(
+            "StorageCapabilityMissing: this function has not declared the `storage.write` \
+             capability (add \"storage\": { \"write\": true } to its oxy-app.json entry)"
+                .to_string(),
+        );
+    }
+    if needs_read && !caps.storage_read {
+        return Err(
+            "StorageCapabilityMissing: this function has not declared the `storage.read` \
+             capability (add \"storage\": { \"read\": true } to its oxy-app.json entry)"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// Normalize an author-supplied `encoding` field. Absent, empty, and
@@ -1931,6 +1954,96 @@ mod tests {
         assert!(err.contains("not valid base64"), "{err}");
         let err = fetch_body_bytes(&json!({ "body": "x", "bodyEncoding": "hex" })).unwrap_err();
         assert!(err.contains("unknown bodyEncoding"), "{err}");
+    }
+
+    // ── ctx.storage capability gate ─────────────────────────────────────────
+
+    fn storage_caps(read: bool, write: bool) -> FunctionCapabilities {
+        FunctionCapabilities {
+            storage_read: read,
+            storage_write: write,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn storage_delete_and_copy_are_refused_without_write() {
+        // A read-only function must not be able to destroy or overwrite what
+        // is in its app's silo. Both ops used to pass on `storage.read` alone.
+        let read_only = storage_caps(true, false);
+        for op in ["delete", "copy"] {
+            let err = check_storage_capability(op, &read_only)
+                .expect_err(&format!("`{op}` must be refused without storage.write"));
+            assert!(err.starts_with("StorageCapabilityMissing"), "{op}: {err}");
+            assert!(err.contains("`storage.write`"), "{op}: {err}");
+        }
+    }
+
+    #[test]
+    fn storage_copy_is_refused_without_read() {
+        // `copy` reads its source as well as writing its destination, so write
+        // alone is not enough. `delete` reads nothing, so write alone is.
+        let write_only = storage_caps(false, true);
+        let err = check_storage_capability("copy", &write_only)
+            .expect_err("`copy` must be refused without storage.read");
+        assert!(err.contains("`storage.read`"), "{err}");
+        for op in ["delete", "put", "getUploadUrl"] {
+            check_storage_capability(op, &write_only)
+                .unwrap_or_else(|e| panic!("`{op}` needs only storage.write: {e}"));
+        }
+        // Holding both is what a copy needs.
+        check_storage_capability("copy", &storage_caps(true, true)).expect("read+write copies");
+    }
+
+    #[test]
+    fn storage_reads_work_with_read_only_and_writes_do_not() {
+        let read_only = storage_caps(true, false);
+        for op in ["get", "list", "head", "getDownloadUrl"] {
+            check_storage_capability(op, &read_only)
+                .unwrap_or_else(|e| panic!("`{op}` needs only storage.read: {e}"));
+        }
+        for op in ["put", "getUploadUrl"] {
+            assert!(
+                check_storage_capability(op, &read_only).is_err(),
+                "`{op}` must be refused without storage.write"
+            );
+        }
+    }
+
+    #[test]
+    fn storage_gate_is_closed_when_nothing_is_declared() {
+        let none = FunctionCapabilities::default();
+        for op in [
+            "getUploadUrl",
+            "getDownloadUrl",
+            "put",
+            "get",
+            "head",
+            "list",
+            "delete",
+            "copy",
+        ] {
+            assert!(
+                check_storage_capability(op, &none).is_err(),
+                "`{op}` must be refused with no storage capability"
+            );
+        }
+    }
+
+    #[test]
+    fn storage_unknown_op_is_refused_by_name_whatever_is_declared() {
+        // An op the gate does not name must not inherit the read gate: a future
+        // write op (`move`) would ship gated on `storage.read` alone, and a typo
+        // (`heads`) would be reported as a missing capability instead of by name.
+        let none = FunctionCapabilities::default();
+        let read_write = storage_caps(true, true);
+        for op in ["move", "heads", ""] {
+            for (label, caps) in [("no capabilities", &none), ("read+write", &read_write)] {
+                let err = check_storage_capability(op, caps)
+                    .expect_err(&format!("unknown op `{op}` must be refused ({label})"));
+                assert_eq!(err, format!("ctx.storage: unknown op '{op}'"), "{label}");
+            }
+        }
     }
 
     // ── build_insert_sql / quote_ident / json_value_to_sql_literal ─────────

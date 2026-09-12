@@ -329,14 +329,15 @@ impl FunctionManifestEntry {
         self.email.as_ref().and_then(|e| e.send).unwrap_or(false)
     }
 
-    /// Whether `ctx.storage` reads (getDownloadUrl/list/get) are permitted
-    /// (fail-closed default: false).
+    /// Whether `ctx.storage` reads (getDownloadUrl/get/head/list, and copy's
+    /// source) are permitted (fail-closed default: false). The per-op mapping is
+    /// `host::check_storage_capability`.
     fn storage_read(&self) -> bool {
         self.storage.as_ref().and_then(|s| s.read).unwrap_or(false)
     }
 
-    /// Whether `ctx.storage` writes (getUploadUrl/put) are permitted
-    /// (fail-closed default: false).
+    /// Whether `ctx.storage` writes (getUploadUrl/put/delete, and copy's
+    /// destination) are permitted (fail-closed default: false).
     fn storage_write(&self) -> bool {
         self.storage.as_ref().and_then(|s| s.write).unwrap_or(false)
     }

@@ -307,11 +307,12 @@ pub trait FunctionHost: Send + Sync {
     /// `from` address (the author may set `replyTo` only). `input` is the JS
     /// payload object; returns `{ messageId }`.
     async fn send_email(&self, input: serde_json::Value) -> Result<serde_json::Value, String>;
-    /// `ctx.storage.{getUploadUrl,getDownloadUrl,list,put,get}` — presigned S3
-    /// file storage scoped to the app's silo. `op` selects the operation;
-    /// `payload` carries its args. Gated by the fail-closed `storage.{read,write}`
-    /// manifest capabilities (write for uploads/put, read for the rest). Mirrors
-    /// `warehouse_write`'s single-op-dispatcher shape.
+    /// `ctx.storage.{getUploadUrl,getDownloadUrl,put,get,head,list,delete,copy}`
+    /// — presigned S3 file storage scoped to the app's silo. `op` selects the
+    /// operation; `payload` carries its args. Gated by the fail-closed
+    /// `storage.{read,write}` manifest capabilities, per op in
+    /// `host::check_storage_capability`. Mirrors `warehouse_write`'s
+    /// single-op-dispatcher shape.
     async fn storage(
         &self,
         op: String,
@@ -723,8 +724,9 @@ async fn op_ctx_email_send(
 }
 
 /// `ctx.storage.*` — bridge to `FunctionHost::storage`. `op` selects the
-/// operation ("getUploadUrl" / "getDownloadUrl" / "list" / "put" / "get"),
-/// `payload` carries its args (JSON-stringified by `__wrapOp`).
+/// operation ("getUploadUrl" / "getDownloadUrl" / "put" / "get" / "head" /
+/// "list" / "delete" / "copy"), `payload` carries its args (JSON-stringified by
+/// `__wrapOp`).
 #[op2]
 #[string]
 async fn op_ctx_storage(
