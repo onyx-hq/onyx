@@ -34,8 +34,14 @@ pub struct Model {
     pub last_seen_at: Option<DateTimeWithTimeZone>,
     pub revoked_at: Option<DateTimeWithTimeZone>,
     /// Where the tablet sits. A physical object has a place; the login page
-    /// can name it and, later, a roster can be narrowed to it.
+    /// names it, and the crew roster is narrowed to it.
     pub location_id: Option<Uuid>,
+    /// Seconds of inactivity after which the app signs the shift session out.
+    /// NULL is "the default" (`frontline_devices::DEFAULT_IDLE_TIMEOUT_SECONDS`)
+    /// rather than "no timeout", so existing kiosks acquire the behaviour with
+    /// no backfill. The platform only carries the number — the countdown runs
+    /// in the custom app.
+    pub idle_timeout_seconds: Option<i32>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

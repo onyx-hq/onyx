@@ -163,6 +163,7 @@ mod m20260906_000001_org_kiosk_devices;
 mod m20260907_000001_operating_graph;
 mod m20260908_000001_audit_events_append_only;
 mod m20260908_000002_drop_checkpoints;
+mod m20260911_000001_kiosk_idle_timeout;
 
 pub struct Migrator;
 
@@ -327,6 +328,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260907_000001_operating_graph::Migration),
             Box::new(m20260908_000001_audit_events_append_only::Migration),
             Box::new(m20260908_000002_drop_checkpoints::Migration),
+            Box::new(m20260911_000001_kiosk_idle_timeout::Migration),
         ]
     }
 }

@@ -22,8 +22,19 @@ export interface BoundKioskDevice {
   /**
    * Where the tablet sits, when the admin said — one of the org's locations.
    * Absent on servers older than the operating graph.
+   *
+   * It also decides the roster: `GET /frontline/roster` lists only workers
+   * assigned at this location. A kiosk with no location gets the org-wide list.
    */
   location?: { id: string; name: string } | null;
+  /**
+   * Seconds of inactivity after which a crew session should sign itself out.
+   * The platform only carries the number — nothing server-side watches a clock,
+   * so an app in crew mode has to arm its own timer with this. Always present
+   * (the server resolves an unset column to its default, 300); optional here
+   * only for servers older than 2026-09-11.
+   */
+  idleTimeoutSeconds?: number;
   /**
    * The app this kiosk was enrolled for, or null. Still goes through the
    * return-to allowlist before the browser is sent there.
@@ -140,6 +151,8 @@ export interface KioskDeviceRow {
   /** The place this tablet sits at, or null when it was enrolled without one. */
   location_id: string | null;
   location_name: string | null;
+  /** Seconds of inactivity before the app signs the shift out; the default (300) when unset. */
+  idle_timeout_seconds: number;
 }
 
 export interface ListDevicesResponse {
@@ -149,7 +162,14 @@ export interface ListDevicesResponse {
 export interface CreateKioskDeviceRequest {
   name: string;
   return_to?: string;
+  /** The tablet's place — and, through it, whose names its crew picker shows. */
   location_id?: string | null;
+  /**
+   * Seconds of inactivity before the app closes the shift session. Omit to
+   * leave it at the platform default (300); 30 s to 12 h, refused with a 400
+   * outside that.
+   */
+  idle_timeout_seconds?: number;
 }
 
 /**

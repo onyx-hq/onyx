@@ -32,7 +32,7 @@ use axum::extract::{Path, Query};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::{Json, http::header};
-use entity::{org_frontline_members, organizations, user_credentials, users};
+use entity::{org_frontline_members, org_role_members, organizations, user_credentials, users};
 use oxy::database::client::establish_connection;
 use oxy_app_core::audit;
 use oxy_auth::extractor::AuthenticatedUserExtractor;
@@ -51,7 +51,12 @@ use uuid::Uuid;
 /// Twelve hours, not the week a magic-link session gets: this credential was
 /// proved by four digits typed on a shared tablet in a room full of people, and
 /// the tablet does not leave the store. A closing shift is the long case.
-const SHIFT_HOURS: i64 = 12;
+///
+/// It is a CEILING, not the working rule. What actually ends an unattended
+/// shift is the kiosk's idle timeout
+/// (`frontline_devices::DEFAULT_IDLE_TIMEOUT_SECONDS`), which is why that
+/// module reads this constant rather than keeping its own copy of twelve.
+pub(crate) const SHIFT_HOURS: i64 = 12;
 
 /// Per-org attempt ceiling within [`ORG_WINDOW`].
 ///
@@ -107,7 +112,7 @@ pub struct RosterQuery {
     pub org: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RosterEntry {
     /// The stable login name the kiosk sends back with the PIN. Not the
     /// display name: renaming a worker must not change how they sign in.
@@ -117,15 +122,52 @@ pub struct RosterEntry {
 
 /// The name picker.
 ///
-/// Deliberately carries **no** credential material and **no** lockout state. It
-/// is rendered on a screen anyone in the building can see, so it must not help
+/// # Whose names it shows
+///
+/// **The tablet's store, not the tenant.** A kiosk bound to a location lists
+/// only workers who hold an assignment AT that location
+/// (`org_role_members.location_id`, the operating graph's roster — see
+/// `operating_graph::assignments`). A kiosk with no location keeps the
+/// org-wide list, because there is no store to narrow to.
+///
+/// Two exclusions are deliberate rather than oversights:
+///
+/// * **An org-wide position does not appear.** `org_role_members` stores
+///   `location_id IS NULL` for a franchisor-scope role, and an Account Manager
+///   who works across every store signs in on the web — putting them on every
+///   tablet in the chain is the org-wide picker again under another name.
+/// * **There is no per-assignment status column.** Standing is the worker's
+///   (`org_frontline_members.status`), already filtered below, so "active
+///   assignment" means the worker is active and the assignment row exists.
+///   Un-rostering somebody from a store is a delete, and it takes them off
+///   that store's picker.
+///
+/// Until 2026-09-11 this listed every PIN holder in the org, so a Santa Rosa
+/// manager appeared on the Clovis tablet — a name picker of 127 strangers,
+/// and a wider guessing surface for anyone standing at the counter.
+///
+/// **The picker narrows; sign-in does not.** `login` below checks the org, the
+/// kiosk's binding to it and the PIN — never `org_role_members`. A worker who
+/// knows their own identifier can still sign in on another store's tablet.
+/// This is disclosure hygiene, not a location check; the reach a signed-in
+/// worker then holds is the operating graph's business, not this route's.
+///
+/// **Deleting a location re-widens its tablets.** `org_kiosk_devices.location_id`
+/// is `ON DELETE SET NULL`, and `NULL` here means org-wide, so a kiosk whose
+/// place was deleted falls back to the whole tenant's list. Re-bind or revoke
+/// such a kiosk rather than leaving it.
+///
+/// # What it still does not carry
+///
+/// Deliberately **no** credential material and **no** lockout state. It is
+/// rendered on a screen anyone in the building can see, so it must not help
 /// an attacker choose a target — "this one is locked out" would confirm both
 /// that the worker exists and that somebody has been guessing at them.
 ///
-/// It does leak the roster of one store to anyone who knows the org slug. That
-/// is a deliberate trade and the reason the PIN is not the only control: the
-/// tablet is on the wall, the names are on the schedule beside it, and a name
-/// picker nobody can load is a kiosk nobody can use.
+/// It does leak the roster of one store to anyone holding that store's kiosk
+/// cookie. That is a deliberate trade and the reason the PIN is not the only
+/// control: the tablet is on the wall, the names are on the schedule beside
+/// it, and a name picker nobody can load is a kiosk nobody can use.
 #[instrument(skip_all, fields(org = %q.org))]
 pub async fn roster(headers: HeaderMap, Query(q): Query<RosterQuery>) -> axum::response::Response {
     // The body depends on the kiosk cookie; see `frontline_devices::no_store`.
@@ -151,9 +193,8 @@ async fn roster_body(headers: &HeaderMap, q: RosterQuery) -> axum::response::Res
     // device it discloses nothing to anyone who is not already standing at
     // the counter, and the same empty answer covers "no kiosk", "wrong org"
     // and "no such org".
-    let bound_to = super::frontline_devices::bound_device(&db, headers)
-        .await
-        .map(|d| d.org_id);
+    let device = super::frontline_devices::bound_device(&db, headers).await;
+    let bound_to = device.as_ref().map(|d| d.org_id);
     let Ok(Some(org)) = organizations::Entity::find()
         .filter(organizations::Column::Slug.eq(&q.org))
         .one(&db)
@@ -209,18 +250,90 @@ async fn roster_body(headers: &HeaderMap, q: RosterQuery) -> axum::response::Res
 
     // Built from `rows` so the `identifier` sort the query asked for survives —
     // a picker whose order changes between loads is a picker people mis-tap.
-    let staff: Vec<RosterEntry> = rows
+    let candidates: Vec<(Uuid, RosterEntry)> = rows
         .into_iter()
         .filter(|c| active.contains(&c.user_id))
         .filter_map(|c| {
-            names.get(&c.user_id).map(|name| RosterEntry {
-                identifier: c.identifier,
-                name: name.clone(),
+            names.get(&c.user_id).map(|name| {
+                (
+                    c.user_id,
+                    RosterEntry {
+                        identifier: c.identifier,
+                        name: name.clone(),
+                    },
+                )
             })
         })
         .collect();
 
+    // Where each of them is rostered. One more bounded read, and only when the
+    // tablet has a place to narrow to — an org whose kiosks carry no location
+    // pays nothing for a rule that cannot apply to it.
+    //
+    // `unwrap_or_default` on the read fails CLOSED, which is the direction this
+    // one has to fail in: no assignment rows means an empty picker, not the
+    // whole tenant's crew appearing on a store's tablet because a query blipped.
+    // Closed but not silent — the warn is what separates "nobody is rostered
+    // here" from "the query failed" for whoever is staring at an empty picker.
+    let location = device.and_then(|d| d.location_id);
+    let assignments: Vec<(Uuid, Option<Uuid>)> = match location {
+        None => Vec::new(),
+        Some(at) => org_role_members::Entity::find()
+            .filter(org_role_members::Column::OrgId.eq(org.id))
+            .filter(org_role_members::Column::LocationId.eq(at))
+            .filter(
+                org_role_members::Column::UserId
+                    .is_in(candidates.iter().map(|(id, _)| *id).collect::<Vec<_>>()),
+            )
+            .all(&db)
+            .await
+            .inspect_err(|e| {
+                warn!(error = %e, org_id = %org.id, location = %at,
+                    "roster assignment read failed; the picker will be empty")
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| (a.user_id, a.location_id))
+            .collect(),
+    };
+
+    let candidates_in = candidates.len();
+    let staff = narrow_to_location(candidates, location, &assignments);
+    info!(org_id = %org.id, location = ?location, candidates = candidates_in, staff = staff.len(),
+        "frontline roster narrowed");
     Json(serde_json::json!({ "staff": staff })).into_response()
+}
+
+/// The rule the picker exists to enforce: a kiosk at a place shows the people
+/// assigned to that place.
+///
+/// Pure, and given the assignment rows as `(user_id, location_id)` pairs, so
+/// the rule can be tested without a database. It is the whole point of the
+/// read and is one deleted line away from being org-wide again.
+///
+/// `None` for `location` is a kiosk the admin enrolled without a place —
+/// today's org-wide behaviour, kept rather than treated as "nowhere".
+/// `Some(_)` matches on the location EXACTLY: an assignment carrying
+/// `location_id IS NULL` is an org-wide position and does not put its holder
+/// on a store's tablet.
+fn narrow_to_location(
+    candidates: Vec<(Uuid, RosterEntry)>,
+    location: Option<Uuid>,
+    assignments: &[(Uuid, Option<Uuid>)],
+) -> Vec<RosterEntry> {
+    let Some(location) = location else {
+        return candidates.into_iter().map(|(_, entry)| entry).collect();
+    };
+    let here: std::collections::HashSet<Uuid> = assignments
+        .iter()
+        .filter(|(_, at)| *at == Some(location))
+        .map(|(user, _)| *user)
+        .collect();
+    candidates
+        .into_iter()
+        .filter(|(user, _)| here.contains(user))
+        .map(|(_, entry)| entry)
+        .collect()
 }
 
 #[derive(Debug, Deserialize)]
@@ -446,6 +559,117 @@ mod tests {
         assert!(
             !cookie.contains("Secure"),
             "a plain-http kiosk would discard this: {cookie}"
+        );
+    }
+
+    /// One entry, named after the person, so the assertions below read as
+    /// "who is on this tablet" rather than as index arithmetic.
+    fn worker(name: &str) -> (Uuid, RosterEntry) {
+        (
+            Uuid::new_v4(),
+            RosterEntry {
+                identifier: name.to_lowercase(),
+                name: name.to_string(),
+            },
+        )
+    }
+
+    fn names(entries: &[RosterEntry]) -> Vec<&str> {
+        entries.iter().map(|e| e.name.as_str()).collect()
+    }
+
+    /// The bug this closes: a kiosk bolted to Clovis listed every PIN holder
+    /// in the org, so a Santa Rosa manager appeared on the Clovis tablet.
+    #[test]
+    fn a_kiosk_at_a_store_shows_only_that_stores_crew() {
+        let clovis = Uuid::new_v4();
+        let santa_rosa = Uuid::new_v4();
+        let (maria, maria_entry) = worker("Maria");
+        let (dev, dev_entry) = worker("Devon");
+        let candidates = vec![(maria, maria_entry), (dev, dev_entry)];
+        let assignments = vec![(maria, Some(clovis)), (dev, Some(santa_rosa))];
+
+        assert_eq!(
+            names(&narrow_to_location(
+                candidates.clone(),
+                Some(clovis),
+                &assignments
+            )),
+            ["Maria"],
+            "the tablet's own store is the roster"
+        );
+        // Same rows, other tablet — proving the filter reads the location it
+        // was given rather than just dropping everyone but the first row.
+        assert_eq!(
+            names(&narrow_to_location(
+                candidates,
+                Some(santa_rosa),
+                &assignments
+            )),
+            ["Devon"]
+        );
+    }
+
+    /// An org-wide position is not a position at every store. An Account
+    /// Manager signs in on the web; putting them on every tablet in the chain
+    /// is the org-wide picker again under another name.
+    #[test]
+    fn an_org_wide_position_is_not_on_a_stores_tablet() {
+        let clovis = Uuid::new_v4();
+        let (maria, maria_entry) = worker("Maria");
+        let (amy, amy_entry) = worker("Amy");
+        let staff = narrow_to_location(
+            vec![(maria, maria_entry), (amy, amy_entry)],
+            Some(clovis),
+            &[(maria, Some(clovis)), (amy, None)],
+        );
+        assert_eq!(names(&staff), ["Maria"]);
+    }
+
+    /// A worker with no assignment at all is nobody's crew — including on a
+    /// tablet at a store they have never been rostered to.
+    #[test]
+    fn an_unrostered_worker_is_on_no_stores_tablet() {
+        let clovis = Uuid::new_v4();
+        let (ghost, ghost_entry) = worker("Ghost");
+        assert!(
+            narrow_to_location(vec![(ghost, ghost_entry)], Some(clovis), &[]).is_empty(),
+            "an empty assignment table must not fall through to org-wide"
+        );
+    }
+
+    /// A kiosk enrolled without a place keeps today's behaviour: there is no
+    /// store to narrow to, and a picker nobody can load is a kiosk nobody can
+    /// use.
+    #[test]
+    fn a_kiosk_with_no_place_still_shows_the_org() {
+        let (maria, maria_entry) = worker("Maria");
+        let (dev, dev_entry) = worker("Devon");
+        let staff = narrow_to_location(
+            vec![(maria, maria_entry), (dev, dev_entry)],
+            None,
+            // Assignments exist and must be ignored, not consulted.
+            &[(maria, Some(Uuid::new_v4()))],
+        );
+        assert_eq!(names(&staff), ["Maria", "Devon"]);
+    }
+
+    /// The identifier order the query asked for is what people learn to tap.
+    #[test]
+    fn narrowing_keeps_the_order_the_query_chose() {
+        let clovis = Uuid::new_v4();
+        let (a, a_entry) = worker("Ana");
+        let (b, b_entry) = worker("Bo");
+        let (c, c_entry) = worker("Cy");
+        let staff = narrow_to_location(
+            vec![(a, a_entry), (b, b_entry), (c, c_entry)],
+            Some(clovis),
+            &[(c, Some(clovis)), (a, Some(clovis))],
+        );
+        assert_eq!(
+            names(&staff),
+            ["Ana", "Cy"],
+            "the assignment rows' order must not reorder the picker"
         );
     }
 

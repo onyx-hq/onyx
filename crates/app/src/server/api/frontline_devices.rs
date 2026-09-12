@@ -68,6 +68,26 @@ const ENROL_LINK_HOURS: i64 = 24;
 const DEVICE_COOKIE_MAX_AGE_SECS: i64 = 365 * 24 * 60 * 60;
 const NAME_MAX_CHARS: usize = 80;
 
+/// How long a kiosk may sit untouched before the app signs the shift session
+/// out — five minutes, unless the admin said otherwise.
+///
+/// The shift session's own twelve hours (`frontline::SHIFT_HOURS`) is a
+/// ceiling sized for a closing shift, not a working rule: a tablet on a
+/// counter stays signed in as whoever last touched it, so everything the next
+/// person does is attributed to them. **The platform only carries this
+/// number.** Nothing here watches a clock — the custom app in crew mode reads
+/// it from `GET /api/frontline/device` and closes its own session, which is
+/// the only place that can tell "idle" from "reading the screen".
+pub const DEFAULT_IDLE_TIMEOUT_SECONDS: u32 = 300;
+/// Below this a kiosk is unusable — a worker would be signed out mid-tap —
+/// and zero would read as "instantly" rather than "never", so it is refused
+/// rather than silently treated as one or the other.
+const IDLE_TIMEOUT_MIN_SECONDS: u32 = 30;
+/// Above the shift itself the number can never fire: the session is gone
+/// first. Pinned to `SHIFT_HOURS` rather than to a second copy of 12, so
+/// changing the shift length cannot leave a timeout that is dead on arrival.
+const IDLE_TIMEOUT_MAX_SECONDS: u32 = super::frontline::SHIFT_HOURS as u32 * 3600;
+
 fn sha256_hex(s: &str) -> String {
     hex::encode(Sha256::digest(s.as_bytes()))
 }
@@ -118,6 +138,39 @@ pub struct BoundDevice {
     pub return_to: Option<String>,
     /// Where the tablet sits, when the admin said.
     pub location_id: Option<Uuid>,
+    /// Seconds of inactivity after which the app closes the shift session.
+    /// Always a number: the stored column is nullable and NULL means the
+    /// default, so a caller never has to know that.
+    pub idle_timeout_seconds: u32,
+}
+
+/// The stored column read as the number a kiosk acts on.
+///
+/// NULL is the default rather than "no timeout" — that is what lets every row
+/// enrolled before this column existed acquire the behaviour without a
+/// backfill. A negative value cannot be written through `create`, but the
+/// column is a plain `INTEGER` and a hand-written row could carry one; it
+/// falls back to the default rather than wrapping into an enormous `u32`.
+fn effective_idle_timeout(stored: Option<i32>) -> u32 {
+    // The same interval the writer validates. A hand-written row above the
+    // ceiling would otherwise be served verbatim, arming a timer that can never
+    // fire before the shift session itself is gone.
+    stored
+        .and_then(|v| u32::try_from(v).ok())
+        .filter(|v| (IDLE_TIMEOUT_MIN_SECONDS..=IDLE_TIMEOUT_MAX_SECONDS).contains(v))
+        .unwrap_or(DEFAULT_IDLE_TIMEOUT_SECONDS)
+}
+
+/// What an admin asked for, as the column stores it. `None` stays `None` —
+/// "use the default", not a copy of today's default frozen into the row.
+fn validate_idle_timeout(requested: Option<u32>) -> Result<Option<i32>, DeviceError> {
+    match requested {
+        None => Ok(None),
+        Some(secs) if (IDLE_TIMEOUT_MIN_SECONDS..=IDLE_TIMEOUT_MAX_SECONDS).contains(&secs) => {
+            Ok(Some(secs as i32))
+        }
+        Some(_) => Err(DeviceError::BadIdleTimeout),
+    }
 }
 
 /// Resolve the device a request's kiosk cookie names — bound, unrevoked, and
@@ -146,6 +199,7 @@ pub async fn bound_device(db: &DatabaseConnection, headers: &HeaderMap) -> Optio
         name: row.name,
         return_to: row.return_to,
         location_id: row.location_id,
+        idle_timeout_seconds: effective_idle_timeout(row.idle_timeout_seconds),
     })
 }
 
@@ -170,6 +224,11 @@ pub enum DeviceError {
     BadReturnTo,
     #[error("no such location in this org")]
     BadLocation,
+    #[error(
+        "idle_timeout_seconds must be between {IDLE_TIMEOUT_MIN_SECONDS} and \
+         {IDLE_TIMEOUT_MAX_SECONDS} seconds"
+    )]
+    BadIdleTimeout,
     /// Covers expired, already used, revoked and never issued — one arm, so the
     /// public bind route cannot be used to tell those apart.
     #[error("that enrol link is not valid")]
@@ -180,20 +239,45 @@ pub enum DeviceError {
     Db(#[from] DbErr),
 }
 
+/// What an admin says about a kiosk when they enrol it.
+///
+/// Grouped rather than passed as five positional arguments — four of them
+/// optional, three of them the same shape — which is a swap waiting to happen
+/// at a call site reading `(…, None, None, None, None)`.
+#[derive(Debug, Default, Clone)]
+pub struct NewDevice<'a> {
+    /// The admin's label — "Front counter", "Drive-thru iPad".
+    pub name: &'a str,
+    /// Where the tablet lands after sign-in; held to the return-to allowlist.
+    pub return_to: Option<&'a str>,
+    /// The place this tablet sits at — one of this org's locations. It is what
+    /// narrows the crew roster to this store.
+    pub location_id: Option<Uuid>,
+    /// Seconds of inactivity before the app closes the session. `None` leaves
+    /// the column NULL, which reads as [`DEFAULT_IDLE_TIMEOUT_SECONDS`].
+    pub idle_timeout_seconds: Option<u32>,
+    pub created_by: Option<Uuid>,
+}
+
 /// Create a device and mint its one-time enrol token. The token is returned
 /// exactly once, here; only its hash is stored.
 pub async fn create(
     db: &DatabaseConnection,
     org_id: Uuid,
-    name: &str,
-    return_to: Option<&str>,
-    location_id: Option<Uuid>,
-    created_by: Option<Uuid>,
+    spec: NewDevice<'_>,
 ) -> Result<(devices::Model, String), DeviceError> {
+    let NewDevice {
+        name,
+        return_to,
+        location_id,
+        idle_timeout_seconds,
+        created_by,
+    } = spec;
     let name = name.trim();
     if name.is_empty() || name.chars().count() > NAME_MAX_CHARS {
         return Err(DeviceError::BadName);
     }
+    let idle_timeout_seconds = validate_idle_timeout(idle_timeout_seconds)?;
     let return_to = match return_to.map(str::trim).filter(|s| !s.is_empty()) {
         None => None,
         Some(url) if validate_return_to_url(url) => Some(url.to_string()),
@@ -227,6 +311,7 @@ pub async fn create(
         last_seen_at: Set(None),
         revoked_at: Set(None),
         location_id: Set(location_id),
+        idle_timeout_seconds: Set(idle_timeout_seconds),
     }
     .insert(db)
     .await?;
@@ -471,6 +556,9 @@ async fn device_status_body(headers: &HeaderMap) -> Response {
         "device": device.name,
         "returnTo": device.return_to,
         "location": location,
+        // What the app in crew mode arms its own idle timer with. Always
+        // present, so a client never has to carry a copy of the default.
+        "idleTimeoutSeconds": device.idle_timeout_seconds,
     }))
     .into_response()
 }
@@ -583,9 +671,16 @@ pub struct CreateDeviceRequest {
     pub name: String,
     #[serde(default)]
     pub return_to: Option<String>,
-    /// Where the tablet sits — one of this org's locations, or none.
+    /// Where the tablet sits — one of this org's locations, or none. It also
+    /// decides whose names the crew picker shows: a kiosk with a place lists
+    /// only the workers assigned there.
     #[serde(default)]
     pub location_id: Option<Uuid>,
+    /// Seconds of inactivity after which the app signs the shift out. Omitted
+    /// leaves the column NULL, which every reader takes as
+    /// [`DEFAULT_IDLE_TIMEOUT_SECONDS`].
+    #[serde(default)]
+    pub idle_timeout_seconds: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -648,10 +743,13 @@ pub async fn create_device(
     match create(
         &db,
         org_id,
-        &req.name,
-        req.return_to.as_deref(),
-        req.location_id,
-        Some(actor.id),
+        NewDevice {
+            name: &req.name,
+            return_to: req.return_to.as_deref(),
+            location_id: req.location_id,
+            idle_timeout_seconds: req.idle_timeout_seconds,
+            created_by: Some(actor.id),
+        },
     )
     .await
     {
@@ -680,9 +778,12 @@ pub async fn create_device(
             )
                 .into_response()
         }
-        Err(e @ (DeviceError::BadName | DeviceError::BadReturnTo | DeviceError::BadLocation)) => {
-            json_error(StatusCode::BAD_REQUEST, e.to_string())
-        }
+        Err(
+            e @ (DeviceError::BadName
+            | DeviceError::BadReturnTo
+            | DeviceError::BadLocation
+            | DeviceError::BadIdleTimeout),
+        ) => json_error(StatusCode::BAD_REQUEST, e.to_string()),
         Err(e) => {
             warn!(error = %e, "kiosk device create failed");
             json_error(StatusCode::INTERNAL_SERVER_ERROR, "create failed")
@@ -704,6 +805,10 @@ pub struct DeviceRow {
     pub enrol_expires_at: Option<String>,
     pub location_id: Option<Uuid>,
     pub location_name: Option<String>,
+    /// The effective value — never null, the default filled in — so an admin
+    /// can read back what they set at enrolment. There is no update route:
+    /// changing it means revoking the tablet and enrolling it again.
+    pub idle_timeout_seconds: u32,
 }
 
 /// `GET /api/orgs/{org_id}/frontline/devices` — org admin. Newest first; no
@@ -745,6 +850,7 @@ pub async fn list_devices(OrgAdmin(_ctx): OrgAdmin, Path(org_id): Path<Uuid>) ->
                     enrol_expires_at: rfc(r.enrol_expires_at),
                     location_name: r.location_id.and_then(|l| places.get(&l).cloned()),
                     location_id: r.location_id,
+                    idle_timeout_seconds: effective_idle_timeout(r.idle_timeout_seconds),
                 })
                 .collect();
             Json(serde_json::json!({ "devices": devices })).into_response()
@@ -848,6 +954,74 @@ mod tests {
         assert_eq!(enrol_link_base(&h), "https://app.oxygen-hq.com");
         // Nothing at all: the helper's fallback, unchanged.
         assert_eq!(enrol_link_base(&HeaderMap::new()), "http://localhost:3000");
+    }
+
+    /// NULL is the default, not "no timeout". Every kiosk enrolled before the
+    /// column existed reads as 300 s, which is what makes the column nullable
+    /// instead of a backfill.
+    #[test]
+    fn an_unset_idle_timeout_reads_as_the_default() {
+        assert_eq!(
+            effective_idle_timeout(None),
+            DEFAULT_IDLE_TIMEOUT_SECONDS,
+            "an unset column must not read as 'never sign out'"
+        );
+        assert_eq!(effective_idle_timeout(Some(900)), 900);
+        // A hand-written row cannot turn the timeout into ~4 billion seconds
+        // by wrapping, nor into something that signs a worker out mid-tap.
+        assert_eq!(
+            effective_idle_timeout(Some(-1)),
+            DEFAULT_IDLE_TIMEOUT_SECONDS
+        );
+        assert_eq!(
+            effective_idle_timeout(Some(1)),
+            DEFAULT_IDLE_TIMEOUT_SECONDS
+        );
+        // ...nor into one the shift session outlives.
+        assert_eq!(
+            effective_idle_timeout(Some(IDLE_TIMEOUT_MAX_SECONDS as i32 + 1)),
+            DEFAULT_IDLE_TIMEOUT_SECONDS
+        );
+        assert_eq!(
+            effective_idle_timeout(Some(IDLE_TIMEOUT_MAX_SECONDS as i32)),
+            IDLE_TIMEOUT_MAX_SECONDS
+        );
+    }
+
+    #[test]
+    fn an_idle_timeout_outside_the_usable_range_is_refused() {
+        // Omitted stays omitted: the row must not freeze a copy of today's
+        // default, or changing the default would leave old kiosks behind.
+        assert_eq!(validate_idle_timeout(None).unwrap(), None);
+        assert_eq!(validate_idle_timeout(Some(300)).unwrap(), Some(300));
+        assert_eq!(
+            validate_idle_timeout(Some(IDLE_TIMEOUT_MIN_SECONDS)).unwrap(),
+            Some(IDLE_TIMEOUT_MIN_SECONDS as i32)
+        );
+        assert_eq!(
+            validate_idle_timeout(Some(IDLE_TIMEOUT_MAX_SECONDS)).unwrap(),
+            Some(IDLE_TIMEOUT_MAX_SECONDS as i32)
+        );
+        // Zero is ambiguous ("instantly" or "never"), so it is refused rather
+        // than guessed at; past the shift length it could never fire.
+        for bad in [0, 1, IDLE_TIMEOUT_MAX_SECONDS + 1, u32::MAX] {
+            assert!(
+                matches!(
+                    validate_idle_timeout(Some(bad)),
+                    Err(DeviceError::BadIdleTimeout)
+                ),
+                "{bad} should not be storable"
+            );
+        }
+    }
+
+    /// The ceiling is the shift, not a second copy of twelve.
+    #[test]
+    fn the_idle_ceiling_tracks_the_shift_length() {
+        assert_eq!(
+            IDLE_TIMEOUT_MAX_SECONDS as i64,
+            super::super::frontline::SHIFT_HOURS * 3600
+        );
     }
 
     #[test]
