@@ -1,13 +1,17 @@
 #!/usr/bin/env node
-// Capture the HQ launcher-card image for this app into `public/card.png`.
+// Capture the HQ launcher-card image for this app into `public/card.jpg`.
 //
 // The card is the 1280x640 image the Oxy HQ home shows for your app
 // (manifest `art` field). This script boots the Vite dev server, opens the
 // app in a headless browser, waits for it to render, and writes a
-// pixel-exact screenshot to `public/card.png` — which Vite copies to the
-// bundle root, so it serves at `/customer-apps/<org>/<slug>/card.png` (the
-// URL the server derives from a RELATIVE `art: "card.png"`). Never hardcode
-// the base path into `art`; keep it relative and let the plugin place it.
+// screenshot to `public/card.jpg` — which Vite copies to the bundle root, so
+// it serves at `/customer-apps/<org>/<slug>/card.jpg` (the URL the server
+// derives from a RELATIVE `art: "card.jpg"`). Never hardcode the base path
+// into `art`; keep it relative and let the plugin place it.
+//
+// JPEG, not PNG: the home page downloads every card's image on every visit.
+// A 1280x640 dashboard screenshot is ~290 KB as PNG and ~110 KB as JPEG, and
+// `oxyc publish` warns about an `art` file over 200 KB.
 //
 // Usage:
 //   pnpm run screenshot                 # dev server, default readiness wait
@@ -16,7 +20,7 @@
 //   pnpm run screenshot -- --selector "main"              # crop to one element
 //   pnpm run screenshot -- --settle 2500                  # extra ms after ready
 //
-// After it writes public/card.png, set `"art": "card.png"` in oxy-app.json,
+// After it writes public/card.jpg, set `"art": "card.jpg"` in oxy-app.json,
 // rebuild, and `oxyc publish`.
 //
 // Playwright is invoked on demand — it is NOT a default dependency of the
@@ -29,7 +33,8 @@ import process from "node:process";
 
 const CARD_WIDTH = 1280;
 const CARD_HEIGHT = 640;
-const OUT_PATH = path.resolve(process.cwd(), "public", "card.png");
+const OUT_PATH = path.resolve(process.cwd(), "public", "card.jpg");
+const JPEG_QUALITY = 82;
 const DEV_PORT = 5173;
 
 function parseArgs(argv) {
@@ -160,16 +165,18 @@ async function main() {
     if (opts.selector) {
       const el = await page.$(opts.selector);
       if (!el) throw new Error(`--selector "${opts.selector}" matched nothing`);
-      await el.screenshot({ path: OUT_PATH });
+      await el.screenshot({ path: OUT_PATH, type: "jpeg", quality: JPEG_QUALITY });
     } else {
       // clip to the exact card frame so the file is always 1280x640
       await page.screenshot({
         path: OUT_PATH,
+        type: "jpeg",
+        quality: JPEG_QUALITY,
         clip: { x: 0, y: 0, width: CARD_WIDTH, height: CARD_HEIGHT },
       });
     }
     console.log(`[screenshot] wrote ${OUT_PATH} (${CARD_WIDTH}x${CARD_HEIGHT})`);
-    console.log('[screenshot] set  "art": "card.png"  in oxy-app.json, then `oxyc publish`.');
+    console.log('[screenshot] set  "art": "card.jpg"  in oxy-app.json, then `oxyc publish`.');
   } finally {
     if (browser) await browser.close();
     if (server) server.stop();

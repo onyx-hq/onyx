@@ -254,8 +254,12 @@ pub fn is_reserved_platform_path(rel: &str) -> bool {
 /// URL changes when their bytes do, and which are therefore safe to serve
 /// cache-first forever.
 ///
-/// Deliberately the **same prefix list** as `cache_control_for`'s `immutable`
-/// branch in `custom_apps_serve::headers`. If the two ever disagree, the worker
+/// Deliberately the **same prefix list** as `cache_control_for`'s hashed-prefix
+/// `immutable` branch in `custom_apps_serve::headers`. That function has one
+/// more `immutable` case — a file whose `?v=` names the build being served (the
+/// launcher's icon and art) — which this list must NOT share: the worker decides
+/// on the pathname alone, so claiming such a file would cache-first its bare,
+/// revalidating URL too. If the prefix lists ever disagree, the worker
 /// would pin something the origin says is revalidatable (or vice versa), and
 /// the failure mode is a stale chunk with no server-side remedy. A new bundler
 /// convention belongs in both, and the test at the bottom of this module
@@ -915,23 +919,58 @@ mod tests {
     /// The worker serves anything in `assets` cache-first and never
     /// revalidates it. That is only sound while the origin agrees the same
     /// paths are `immutable` — see `cache_control_for`. Two lists, one rule.
+    ///
+    /// The worker's rule reads the PATH only (`isImmutable(relativeToBase(
+    /// url.pathname))` in `sw.js` — the query is never consulted), so the
+    /// equality is asserted with no version pin. The origin has exactly one
+    /// `immutable` case beyond it: a file whose `?v=` names the served build.
+    /// That extension is one-directional and safe — the worker sends such a
+    /// request to the network, where the HTTP cache honours the origin's answer
+    /// — and it must stay out of the worker's list, which the last block pins.
     #[test]
     fn immutable_prefixes_agree_with_the_origin_cache_policy() {
         use crate::server::api::custom_apps_serve::cache_control_for_test_only as cache_control_for;
+        use std::path::Path;
+        use uuid::Uuid;
+        let served = Uuid::from_u128(7);
+        let other_build = Uuid::from_u128(8).to_string();
         for p in ["assets/x.js", "_next/static/x.js"] {
             assert!(is_immutable_asset_path(p));
             assert!(
-                cache_control_for(p, std::path::Path::new(p)).contains("immutable"),
+                cache_control_for(p, Path::new(p), None, None).contains("immutable"),
                 "{p} is precacheable here but not immutable at the origin"
             );
+            // The worker ignores the query, so no `v` may take a precacheable
+            // path out of `immutable` at the origin.
+            assert!(
+                cache_control_for(p, Path::new(p), Some(&other_build), Some(served))
+                    .contains("immutable"),
+                "{p} is precacheable here but a mismatched ?v= demoted it at the origin"
+            );
         }
-        for p in ["favicon.ico", "manifest.webmanifest", "sw-custom.js"] {
+        for p in [
+            "favicon.ico",
+            "manifest.webmanifest",
+            "sw-custom.js",
+            "icon.svg",
+        ] {
             assert!(!is_immutable_asset_path(p));
             assert!(
-                !cache_control_for(p, std::path::Path::new(p)).contains("immutable"),
+                !cache_control_for(p, Path::new(p), None, None).contains("immutable"),
                 "{p} is immutable at the origin but not precacheable here"
             );
         }
+        // The origin-only case: a launcher image pinned to the served build.
+        // Immutable at the origin, and NOT claimed by the worker's path rule.
+        let v = served.to_string();
+        assert!(
+            cache_control_for("icon.svg", Path::new("icon.svg"), Some(&v), Some(served))
+                .contains("immutable")
+        );
+        assert!(
+            !is_immutable_asset_path("icon.svg"),
+            "the worker must not cache-first a root file: it cannot see the ?v= pin"
+        );
     }
 
     #[test]

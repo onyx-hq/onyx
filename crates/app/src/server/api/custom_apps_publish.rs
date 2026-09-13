@@ -1313,6 +1313,13 @@ pub async fn publish(mut input: PublishInput) -> Result<PublishResult, PublishEr
     let fn_specs = function_specs(manifest_json.as_ref());
     check_declared_functions(&files, &fn_specs)?;
 
+    // Advisory, never a gate: an oversized card image renders fine and only
+    // slows the home page. Read now, because `files` moves into `put_build`.
+    let art_warning = crate::server::api::custom_apps_validate::oversized_art_warning(
+        &files,
+        manifest_json.as_ref(),
+    );
+
     // Lift the bundle's declared `*.sql` migrations out NOW, while `files` is
     // still in hand and before a single byte has been stored. Three things this
     // ordering buys, none of which survive doing it later:
@@ -1497,11 +1504,13 @@ pub async fn publish(mut input: PublishInput) -> Result<PublishResult, PublishEr
     // start firing background runs — and after `set_pointers` so a fire resolves
     // the just-set `published_build_id`. Best-effort: a schedule failure never
     // fails the publish (functions stay route-invocable).
-    let warnings = if input.promote {
+    let mut warnings = if input.promote {
         register_function_schedules(&db, app_id, input.project_id, &fn_specs).await
     } else {
         Vec::new()
     };
+    // On drafts too: the author should hear about it before promoting.
+    warnings.extend(art_warning);
     gc_builds(&db, app_id, &[build_pk]).await;
 
     // The serve path caches the `apps` row — including the channel pointers

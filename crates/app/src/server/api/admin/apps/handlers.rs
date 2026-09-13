@@ -692,6 +692,7 @@ pub async fn get_app(
         manifests.get(&row.id),
         &org.slug,
         &row.slug,
+        row.published_build_id,
     );
     let mut resp = AppResponse::from_model_with_org(row, &org.slug);
     resp.icon_url = icon_url;

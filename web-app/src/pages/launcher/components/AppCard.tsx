@@ -13,9 +13,12 @@ import type { CustomAppSummary } from "@/types/apps";
 
 export function AppCard({
   app,
+  eagerArt = false,
   onManageAccess
 }: {
   app: CustomAppSummary;
+  /** Load the art immediately — set by the launcher for the cards on screen at first paint. */
+  eagerArt?: boolean;
   /**
    * Open the access dialog for this app. Passed only for org owners and admins —
    * absent means no control renders at all, which is the right default for the
@@ -37,7 +40,7 @@ export function AppCard({
     // link rather than nested inside it, which is what keeps it from navigating
     // (and keeps the markup valid).
     <div className='group relative flex flex-col gap-3 overflow-hidden rounded-lg border bg-card p-5 transition-colors focus-within:border-primary/50 hover:border-primary/50'>
-      <AppArt artUrl={app.art_url} name={app.name} />
+      <AppArt artUrl={app.art_url} name={app.name} eager={eagerArt} />
       <div>
         {/* The mark sits beside the name — the same glyph the rail shows for this
             app — so the rail and the home cards read as one system. Kept off the

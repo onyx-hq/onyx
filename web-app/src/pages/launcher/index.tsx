@@ -85,11 +85,14 @@ const LauncherPage = () => {
               className='grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3'
               data-testid='launcher-app-grid'
             >
-              {customApps.map((app) => (
+              {customApps.map((app, i) => (
                 // art_url in the key remounts the card when art changes, resetting its error fallback
                 <AppCard
                   key={`${app.id}:${app.art_url ?? ""}`}
                   app={app}
+                  // The first row at the widest layout (xl:grid-cols-3) is on screen at
+                  // first paint, so its art should not wait for layout; the rest stay lazy.
+                  eagerArt={i < 3}
                   onManageAccess={manageableOrgId ? setManaging : undefined}
                 />
               ))}

@@ -15,8 +15,9 @@ expensive to retrofit under load.
 - **Content-hashed assets → immutable Cache-Control.** URLs under `assets/`
   (Vite / Astro / Rsbuild / SvelteKit) and `_next/static/` (Next) change only when
   their bytes change → `public, max-age=31536000, immutable`. HTML →
-  `private, no-cache`; unfingerprinted root files → `public, max-age=300`. This is
-  `cache_control_for`; a new hashed-asset dir means adding its prefix there. Without
+  `private, no-cache`; unfingerprinted root files → `public, max-age=300`, unless
+  their `?v=` names the build being served (the launcher's icon/art URLs) → immutable.
+  This is `cache_control_for`; a new hashed-asset dir means adding its prefix there. Without
   it, every chunk re-runs the full auth + membership walk in `serve_inner`.
 - **HTML stays `private`.** It carries a per-visitor tracking `Set-Cookie`, and
   `no-cache` alone still lets a *shared* cache store the response — which would hand

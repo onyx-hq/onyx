@@ -597,7 +597,20 @@ pub(crate) async fn serve_pretty(
                         // someone is reading a stack.
                         let mut runtime = runtime;
                         runtime.build_id = build_pk.to_string();
-                        serve_from_s3_build(&db, id, build_pk, &rest, &runtime, &headers).await
+                        // `?v=` enters the cache decision here. The query never
+                        // reaches `rest` (a path capture), so it is read off the
+                        // URI and compared downstream against the build row
+                        // actually loaded for this request.
+                        serve_from_s3_build(
+                            &db,
+                            id,
+                            build_pk,
+                            &rest,
+                            requested_build_version(uri.query()),
+                            &runtime,
+                            &headers,
+                        )
+                        .await
                     }
                     None => {
                         // Post-retirement: the legacy state-dir serve is gone.
@@ -1220,10 +1233,22 @@ mod reserved_tests {
 /// worker serves cache-first is exactly the set this route calls `immutable`.
 /// Two lists, one rule — and a divergence pins a stale chunk with no
 /// server-side remedy, which is worth a test that reaches across modules.
+///
+/// Takes the version pin as its two raw halves so that test can also assert
+/// the one `immutable` case the worker deliberately does not share.
 #[cfg(test)]
 pub(crate) fn cache_control_for_test_only(
     request_path: &str,
     file_path: &std::path::Path,
+    requested_version: Option<&str>,
+    served_build: Option<Uuid>,
 ) -> &'static str {
-    headers::cache_control_for(request_path, file_path)
+    headers::cache_control_for(
+        request_path,
+        file_path,
+        headers::VersionPin {
+            requested: requested_version,
+            served: served_build,
+        },
+    )
 }

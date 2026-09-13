@@ -338,6 +338,7 @@ pub(super) async fn icon_art_by_app(
                     manifests.get(&app.id),
                     slug,
                     &app.slug,
+                    app.published_build_id,
                 ),
             ))
         })

@@ -117,3 +117,18 @@ describe("AppCard opening behaviour", () => {
     expect(prefetches()).toHaveLength(1);
   });
 });
+
+describe("AppCard art", () => {
+  /// The launcher marks only its first row eager. Every other card stays lazy, so
+  /// a long grid doesn't download images nobody has scrolled to.
+  it("lazy-loads the art unless asked to load it eagerly", () => {
+    const withArt = app({ art_url: "/customer-apps/acme/revenue/card.webp" });
+    const { container, rerender } = render(<AppCard app={withArt} />);
+    const art = () => container.querySelector('img[src="/customer-apps/acme/revenue/card.webp"]');
+    expect(art()).toHaveAttribute("loading", "lazy");
+    expect(art()).toHaveAttribute("decoding", "async");
+
+    rerender(<AppCard app={withArt} eagerArt />);
+    expect(art()).toHaveAttribute("loading", "eager");
+  });
+});

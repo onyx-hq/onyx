@@ -122,6 +122,42 @@ pub fn validate_bundle(
     Ok(())
 }
 
+/// Largest launcher-card image (`art`) that publishes without a warning.
+///
+/// The HQ home downloads every card's image on every visit, and a card is at
+/// most ~600 CSS px wide. A 1280×640 WebP or JPEG is 30–110 KB; the PNG
+/// screenshots that prompted this were 120–944 KB, up to 3588 px wide, and took
+/// ~1.8 s each to arrive.
+const ART_WARN_BYTES: usize = 200 * 1024;
+
+/// A publish warning for an oversized `art` image, or `None`.
+///
+/// **Advisory, not gate 1.** An oversized image still renders — it only makes
+/// the home page slow — so it must never fail a publish the way
+/// [`validate_bundle`] does. It rides `PublishResult::warnings`, which
+/// `oxyc publish` prints.
+///
+/// Silent when there is no manifest, no `art`, or `art` names a file the bundle
+/// does not carry: the launcher already falls back to a letter tile there, and
+/// this check is about bytes, not about whether the image exists.
+pub fn oversized_art_warning(
+    files: &[(String, Vec<u8>)],
+    manifest: Option<&serde_json::Value>,
+) -> Option<String> {
+    let art = manifest?.get("art")?.as_str()?;
+    let (_, bytes) = files.iter().find(|(p, _)| p == art)?;
+    if bytes.len() <= ART_WARN_BYTES {
+        return None;
+    }
+    Some(format!(
+        "launcher card image `{art}` is {} KB. The HQ home downloads it for every card on every \
+         visit, so keep it under {} KB: export 1280×640 as WebP or JPEG, e.g. \
+         `cwebp -q 80 -resize 1280 0 {art} -o card.webp`, then set \"art\": \"card.webp\".",
+        bytes.len() / 1024,
+        ART_WARN_BYTES / 1024,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +216,47 @@ mod tests {
         let html = br#"<html><head><script src="/app.js"></script></head><body></body></html>"#;
         let f = files(&[("index.html", html)]);
         assert!(validate_bundle(&f, "acme", "sales").is_ok());
+    }
+
+    fn art_manifest(art: &str) -> serde_json::Value {
+        serde_json::json!({ "slug": "sales", "art": art })
+    }
+
+    #[test]
+    fn warns_about_an_art_image_over_the_limit() {
+        let big = vec![0u8; ART_WARN_BYTES + 1];
+        let f = vec![("card.png".to_string(), big)];
+        let w = oversized_art_warning(&f, Some(&art_manifest("card.png")))
+            .expect("an oversized card image must warn");
+        assert!(
+            w.contains("card.png"),
+            "the warning must name the file: {w}"
+        );
+    }
+
+    #[test]
+    fn an_art_image_at_the_limit_is_silent() {
+        let f = vec![("shots/card.webp".to_string(), vec![0u8; ART_WARN_BYTES])];
+        assert_eq!(
+            oversized_art_warning(&f, Some(&art_manifest("shots/card.webp"))),
+            None
+        );
+    }
+
+    /// Only the file `art` names counts: a large image elsewhere in the bundle
+    /// is not the launcher's problem, and a missing one is not this check's.
+    #[test]
+    fn is_silent_without_an_art_file_to_measure() {
+        let big = vec![0u8; ART_WARN_BYTES + 1];
+        let f = vec![("assets/hero.png".to_string(), big)];
+        assert_eq!(oversized_art_warning(&f, None), None);
+        assert_eq!(
+            oversized_art_warning(&f, Some(&serde_json::json!({ "slug": "sales" }))),
+            None
+        );
+        assert_eq!(
+            oversized_art_warning(&f, Some(&art_manifest("card.png"))),
+            None
+        );
     }
 }

@@ -120,10 +120,11 @@ async fn org_id(db: &DatabaseConnection, slug: &str) -> Uuid {
 
 #[tokio::test]
 async fn home_grid_lists_the_seeded_app_with_its_card_metadata() {
-    // Bound but unused: it's the call that points this process at a fresh
-    // migrated DB. The handler reaches it through `establish_connection()`.
-    let _db = test_db().await;
+    // Also the call that points this process at a fresh migrated DB — the
+    // handler reaches it through `establish_connection()`.
+    let db = test_db().await;
     seed::seed_demo(Some(examples_path())).await.expect("seed");
+    let build = seeded_published_build(&db).await;
 
     let (status, body) = get_json(&format!("/{}/custom-apps", demo_workspace_id())).await;
     assert_eq!(status, StatusCode::OK);
@@ -144,13 +145,15 @@ async fn home_grid_lists_the_seeded_app_with_its_card_metadata() {
         card["description"].is_string(),
         "card has no description: {card}"
     );
+    // Pinned to the published build, so the serve route can call them
+    // `immutable` — see `a_launcher_image_pinned_to_the_served_build_is_immutable`.
     assert_eq!(
         card["icon_url"],
-        format!("/customer-apps/local/{APP_SLUG}/icon.svg")
+        format!("/customer-apps/local/{APP_SLUG}/icon.svg?v={build}")
     );
     assert_eq!(
         card["art_url"],
-        format!("/customer-apps/local/{APP_SLUG}/card.svg")
+        format!("/customer-apps/local/{APP_SLUG}/card.svg?v={build}")
     );
     assert!(
         card["suggested_questions"]
@@ -256,6 +259,67 @@ async fn app_assets_serve_from_the_build_store() {
     let (status, svg) = get_text(&format!("/customer-apps/local/{APP_SLUG}/icon.svg")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(svg.contains("<svg"), "icon.svg did not serve: {svg}");
+}
+
+/// The launcher's `?v=` pin, end to end through the real router: the query has
+/// to survive down to the cache decision, the URL the home grid hands out has
+/// to come back `immutable`, and a pin naming any other build must not be
+/// honoured — that is the stale-pod race, where the old bytes would otherwise
+/// be pinned under the new build's URL for a year.
+#[tokio::test]
+async fn a_launcher_image_pinned_to_the_served_build_is_immutable() {
+    let db = test_db().await;
+    seed::seed_demo(Some(examples_path())).await.expect("seed");
+    add_guest_to_org(&db, org_id(&db, "local").await).await;
+    let build = seeded_published_build(&db).await;
+    let icon = format!("/customer-apps/local/{APP_SLUG}/icon.svg");
+
+    let (status, cache) = get_cache_control(&format!("{icon}?v={build}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cache, "public, max-age=31536000, immutable");
+
+    let (status, cache) = get_cache_control(&format!("{icon}?v={}", Uuid::new_v4())).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        cache, "public, max-age=300",
+        "a pin for another build was honoured"
+    );
+
+    let (status, cache) = get_cache_control(&icon).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        cache, "public, max-age=300",
+        "a bare root file must revalidate"
+    );
+}
+
+async fn get_cache_control(uri: &str) -> (StatusCode, String) {
+    let resp = router()
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .expect("oneshot");
+    let cache = resp
+        .headers()
+        .get(axum::http::header::CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    (resp.status(), cache)
+}
+
+/// The seeded example app's published build pk — what the launcher pins its
+/// image URLs to.
+async fn seeded_published_build(db: &DatabaseConnection) -> Uuid {
+    let local = org_id(db, "local").await;
+    Apps::find()
+        .filter(apps::Column::OrgId.eq(local))
+        .filter(apps::Column::Slug.eq(APP_SLUG))
+        .one(db)
+        .await
+        .expect("query app")
+        .expect("seeded app")
+        .published_build_id
+        .expect("the seed publishes the example app")
 }
 
 #[tokio::test]

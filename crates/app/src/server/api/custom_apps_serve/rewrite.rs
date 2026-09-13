@@ -305,7 +305,14 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::headers::{cache_control_for, etag_for};
+    use super::super::headers::{VersionPin, etag_for};
+
+    /// Every cache-policy test in this module pins the UNVERSIONED rule — the
+    /// path-and-resolved-file decision a request with no `?v=` gets. The
+    /// version pin has its own tests beside `headers::cache_control_for`.
+    fn cache_control_for(request_path: &str, file_path: &std::path::Path) -> &'static str {
+        super::super::headers::cache_control_for(request_path, file_path, VersionPin::default())
+    }
     use super::*;
 
     fn fake_runtime() -> AppRuntimeConfig {

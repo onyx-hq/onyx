@@ -267,17 +267,27 @@ pub(super) fn resolve_channel(
 /// serve any build. HTML gets the same base-path rewrite + `window.__OXY_APP__`
 /// injection as the legacy disk path; the cache key includes the build id, so
 /// a promote/rollback serves fresh bytes with no explicit invalidation.
+///
+/// `requested_version` is the request's raw `?v=` (see `cache_control_for`).
+/// It is paired here with the build row this request actually loaded — not
+/// with whatever the caller believes is live — because that pairing is the
+/// whole of what makes an `immutable` answer safe.
 pub(crate) async fn serve_from_s3_build(
     db: &sea_orm::DatabaseConnection,
     app_id: Uuid,
     build_pk: Uuid,
     rest: &str,
+    requested_version: Option<&str>,
     runtime: &AppRuntimeConfig,
     headers: &HeaderMap,
 ) -> Response {
     let build = match load_build(db, app_id, build_pk).await {
         Ok(b) => b,
         Err(response) => return response,
+    };
+    let pin = VersionPin {
+        requested: requested_version,
+        served: Some(build.id),
     };
 
     let Some(requested) = s3_object_key(rest, wants_html(headers)) else {
@@ -301,7 +311,9 @@ pub(crate) async fn serve_from_s3_build(
     // derives from the request path rather than the fetched bytes. So on a
     // hit the identity object is never needed: one store round-trip instead
     // of two, and one LRU entry instead of two.
-    if let Some(response) = try_precompressed(app_id, &build.build_id, &requested, headers).await {
+    if let Some(response) =
+        try_precompressed(app_id, &build.build_id, &requested, pin, headers).await
+    {
         return response;
     }
 
@@ -344,7 +356,7 @@ pub(crate) async fn serve_from_s3_build(
 
     let resolved_path = StdPath::new(&rel_used);
     let mime = guess_content_type(resolved_path);
-    let cache = cache_control_for(&requested, resolved_path);
+    let cache = cache_control_for(&requested, resolved_path, pin);
 
     // HTML is transformed on the way out (base-path rewrite + identity
     // injection), so it is never pre-compressed — the stored bytes and the
@@ -586,6 +598,7 @@ async fn try_precompressed(
     app_id: Uuid,
     build_id: &str,
     requested: &str,
+    pin: VersionPin<'_>,
     headers: &HeaderMap,
 ) -> Option<Response> {
     if !precompress::accepts_brotli(headers)
@@ -602,7 +615,7 @@ async fn try_precompressed(
             Some(asset_response(
                 br_bytes,
                 guess_content_type(path),
-                cache_control_for(requested, path),
+                cache_control_for(requested, path, pin),
                 Some("br"),
             ))
         }
@@ -800,7 +813,9 @@ async fn serve_file(
     match fs::read(&canon).await {
         Ok(bytes) => {
             let mime = guess_content_type(&canon);
-            let cache = cache_control_for(rest, &canon);
+            // No version pin: a local folder is edited in place, so no build's
+            // bytes are fixed and a `?v=` must never make them immutable.
+            let cache = cache_control_for(rest, &canon, VersionPin::default());
             // HTML responses get two passes:
             //   1. base-path rewrite — fixes the build-time-vs-serve-time
             //      mismatch that bites when an engineer renames a slug

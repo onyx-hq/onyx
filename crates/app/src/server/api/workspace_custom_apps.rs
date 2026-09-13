@@ -92,15 +92,13 @@ pub(crate) fn safe_relative_art_path(p: &str) -> bool {
 
 /// Card metadata resolved from a manifest. Everything defaults to empty
 /// when the manifest is missing or unreadable so the summary endpoint
-/// never fails on a metadata problem. `art`/`icon` are sanitized relative
-/// paths (resolved to URLs by the caller); the rest are plain display data.
+/// never fails on a metadata problem. Plain display data only — `icon`/`art`
+/// become URLs through [`icon_art_urls`], the one builder every surface uses.
 #[derive(Default)]
 struct CardFields {
     description: Option<String>,
     default_agent: Option<String>,
     suggested_questions: Vec<String>,
-    art: Option<String>,
-    icon: Option<String>,
     status: Option<String>,
 }
 
@@ -109,18 +107,40 @@ struct CardFields {
 /// the homepage launcher list and the admin apps list so every surface shows
 /// the same picture from the one manifest source. See the
 /// `oxy-app-visual-identity` skill.
+///
+/// ## `?v=<published_build_id>`
+///
+/// Icon and art are unfingerprinted bundle-root files, so a bare URL is only
+/// ever `public, max-age=300` at the origin — a longer lifetime would show a
+/// stale picture after a publish. Every launcher render past five minutes paid
+/// a round trip and an auth check per image as a result. Naming the published
+/// build in the URL gives each publish its own URL, which lets the serve route
+/// (`custom_apps_serve::headers::cache_control_for`) answer `immutable` for it.
+///
+/// `v` is the `app_builds` **primary key** (`apps.published_build_id`), not the
+/// engineer-facing `app_builds.build_id` string: the pk is what a promote or
+/// rollback repoints, and it is what the serve route compares `v` against.
+///
+/// `None` — never published — emits the bare URL exactly as before; there is no
+/// build to pin, so the origin keeps its revalidating policy. The `?` cannot
+/// collide with a query already in the path: `safe_relative_art_path` rejects
+/// `?` and `#`.
 pub(super) fn icon_art_urls(
     manifest: Option<&OxyAppManifest>,
     org_slug: &str,
     app_slug: &str,
+    published_build_id: Option<Uuid>,
 ) -> (Option<String>, Option<String>) {
     let Some(m) = manifest else {
         return (None, None);
     };
     // Trailing slash matches `build_pretty_url`, so the relative path appends
     // to a valid same-origin URL.
-    let base = format!("/customer-apps/{org_slug}/{app_slug}/");
-    let to_url = |p: &str| format!("{base}{p}");
+    let base = build_pretty_url(org_slug, app_slug);
+    let version = published_build_id
+        .map(|id| format!("?v={id}"))
+        .unwrap_or_default();
+    let to_url = |p: &str| format!("{base}{p}{version}");
     let icon = m
         .icon
         .as_deref()
@@ -146,16 +166,6 @@ fn manifest_card_fields(manifest: Option<&OxyAppManifest>) -> CardFields {
             .as_ref()
             .map(|a| a.suggested_questions.clone())
             .unwrap_or_default(),
-        art: m
-            .art
-            .as_deref()
-            .filter(|p| safe_relative_art_path(p))
-            .map(str::to_string),
-        icon: m
-            .icon
-            .as_deref()
-            .filter(|p| safe_relative_art_path(p))
-            .map(str::to_string),
         status: m.status.clone(),
     }
 }
@@ -169,10 +179,10 @@ impl CustomAppSummary {
     ) -> Self {
         let url = build_pretty_url(org_slug, &m.slug);
         let fields = manifest_card_fields(manifest);
-        // `url` ends with a trailing slash (e.g. "/customer-apps/acme/my-app/"),
-        // so appending the relative art/icon path yields a valid same-origin URL.
-        let art_url = fields.art.map(|a| format!("{url}{a}"));
-        let icon_url = fields.icon.map(|i| format!("{url}{i}"));
+        // Through the shared builder rather than a local `format!`: this list
+        // used to assemble the same URLs by hand, and a copy is exactly where
+        // the `?v=` build pin would have been forgotten.
+        let (icon_url, art_url) = icon_art_urls(manifest, org_slug, &m.slug, m.published_build_id);
         let visibility = if m.is_restricted() { "members" } else { "org" };
         Self {
             id: m.id,
@@ -334,15 +344,55 @@ pub async fn published_app_summaries(
 mod summary_mapping_tests {
     use super::*;
 
+    fn manifest_with_images() -> OxyAppManifest {
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion": 2,
+            "slug": "x",
+            "icon": "icon.svg",
+            "art": "shots/card.png"
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn missing_manifest_yields_empty_card_fields() {
         let f = manifest_card_fields(None);
         assert!(f.description.is_none());
         assert!(f.default_agent.is_none());
         assert!(f.suggested_questions.is_empty());
-        assert!(f.art.is_none());
-        assert!(f.icon.is_none());
         assert!(f.status.is_none());
+        assert_eq!(
+            icon_art_urls(None, "acme", "ops", Some(Uuid::from_u128(1))),
+            (None, None)
+        );
+    }
+
+    /// Each publish gets its own image URLs, which is what lets the serve route
+    /// call them `immutable` instead of revalidating every five minutes.
+    #[test]
+    fn icon_and_art_urls_carry_the_published_build() {
+        let build = Uuid::from_u128(0x2a);
+        let (icon, art) = icon_art_urls(Some(&manifest_with_images()), "acme", "ops", Some(build));
+        assert_eq!(
+            icon.as_deref(),
+            Some(format!("/customer-apps/acme/ops/icon.svg?v={build}").as_str())
+        );
+        assert_eq!(
+            art.as_deref(),
+            Some(format!("/customer-apps/acme/ops/shots/card.png?v={build}").as_str())
+        );
+    }
+
+    /// Never published: no build to pin, so the URL is exactly what it was
+    /// before pinning existed — no `?v=`, not even an empty one.
+    #[test]
+    fn an_unpublished_app_gets_the_bare_urls() {
+        let (icon, art) = icon_art_urls(Some(&manifest_with_images()), "acme", "ops", None);
+        assert_eq!(icon.as_deref(), Some("/customer-apps/acme/ops/icon.svg"));
+        assert_eq!(
+            art.as_deref(),
+            Some("/customer-apps/acme/ops/shots/card.png")
+        );
     }
 
     #[test]
@@ -361,9 +411,13 @@ mod summary_mapping_tests {
         assert_eq!(f.description.as_deref(), Some("d"));
         assert_eq!(f.default_agent.as_deref(), Some("a.yml"));
         assert_eq!(f.suggested_questions, vec!["q1", "q2"]);
-        assert_eq!(f.art.as_deref(), Some("shots/card.png"));
-        assert_eq!(f.icon.as_deref(), Some("icon.svg"));
         assert_eq!(f.status.as_deref(), Some("23 stores · live"));
+        let (icon, art) = icon_art_urls(Some(&m), "acme", "ops", None);
+        assert_eq!(icon.as_deref(), Some("/customer-apps/acme/ops/icon.svg"));
+        assert_eq!(
+            art.as_deref(),
+            Some("/customer-apps/acme/ops/shots/card.png")
+        );
     }
 
     #[test]
@@ -375,9 +429,15 @@ mod summary_mapping_tests {
             "icon": "../escape.svg"
         }))
         .unwrap();
-        let f = manifest_card_fields(Some(&m));
-        assert_eq!(f.art.as_deref(), Some("card.png"));
-        assert!(f.icon.is_none());
+        let (icon, art) = icon_art_urls(Some(&m), "acme", "ops", Some(Uuid::from_u128(3)));
+        assert!(
+            icon.is_none(),
+            "an escaping path must not become a URL, pinned or not"
+        );
+        assert_eq!(
+            art.as_deref(),
+            Some(format!("/customer-apps/acme/ops/card.png?v={}", Uuid::from_u128(3)).as_str())
+        );
     }
 
     #[test]

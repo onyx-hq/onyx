@@ -10,10 +10,16 @@ import { cn } from "@/libs/shadcn/utils";
 export function AppArt({
   artUrl,
   name,
+  eager = false,
   className
 }: {
   artUrl?: string | null;
   name: string;
+  /**
+   * Start the download immediately. For images on screen at first paint:
+   * `lazy` holds even an in-viewport image until layout has placed it.
+   */
+  eager?: boolean;
   className?: string;
 }) {
   const [failed, setFailed] = useState(false);
@@ -36,7 +42,8 @@ export function AppArt({
     <img
       src={artUrl}
       alt=''
-      loading='lazy'
+      loading={eager ? "eager" : "lazy"}
+      decoding='async'
       onError={() => setFailed(true)}
       className={cn("h-40 w-full rounded-md border object-cover", className)}
     />
